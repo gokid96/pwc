@@ -10,6 +10,7 @@ const object = { Bucket: env.STORAGE_BUCKET, Key: 'w07/source-csvs.json' };
 const s3 = new S3Client({
   endpoint: env.STORAGE_ENDPOINT,
   region: 'auto',
+  forcePathStyle: true,
   credentials: {
     accessKeyId: env.STORAGE_ACCESS_KEY,
     secretAccessKey: env.STORAGE_SECRET_KEY,
