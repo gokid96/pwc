@@ -1,0 +1,11 @@
+deploy_method: docker
+runtime:
+  port: 8080
+database:
+  engine: postgres
+storage:
+  enabled: true
+env:
+  required:
+    - name: CONNECTION_CHECK_TOKEN
+      scope: runtime

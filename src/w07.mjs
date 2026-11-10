@@ -9,9 +9,13 @@ const files = {
 const fields = ['representative_name', 'address', 'bank_account_no'];
 const limit = 2_000_000;
 
-export async function readW07Data(sourceDirectory) {
+export function readW07Data(sourceDirectory) {
+  return loadW07Data(file => readFile(join(sourceDirectory, file), 'utf8'));
+}
+
+export async function loadW07Data(readText) {
   const entries = await Promise.all(Object.entries(files).map(async ([key, file]) => {
-    const text = await readFile(join(sourceDirectory, file), 'utf8');
+    const text = await readText(file);
     const [header, ...lines] = text.replace(/^\uFEFF/, '').split(/\r?\n/);
     const columns = header.split('|');
     const rows = lines.flatMap((line, index) => {
