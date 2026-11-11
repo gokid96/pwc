@@ -1,6 +1,7 @@
 import { steps, labels, followupState, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, fields, individualExceedance, reviewScope, samples } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
+import { workspaceStyles, statusBadge } from './workspace-view.mjs';
 
 const roles = ['영업지원팀', '영업임원', '회계'];
 const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인 요청' };
@@ -14,9 +15,12 @@ const time = value => new Intl.DateTimeFormat('ko-KR', {
 const mask = account => '•••• ' + escape(account.slice(-4));
 
 function table(headers, rows) {
-  return '<table><thead><tr>' + headers.map(header => '<th scope="col">' + header + '</th>').join('') +
-    '</tr></thead><tbody>' + rows.map(row => '<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') +
-    '</tr>').join('') + '</tbody></table>';
+  const columnClass = headers.map(header => /^(합계|금액|장려금)(?:\s|$)/.test(header) ? ' class="amount"' : '');
+  return '<div class="table-scroll" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
+    headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + header + '</th>').join('') +
+    '</tr></thead><tbody>' + rows.map(row => '<tr>' + row.map((cell, index) =>
+      '<td' + columnClass[index] + '>' + cell + '</td>').join('') +
+    '</tr>').join('') + '</tbody></table></div>';
 }
 
 async function transaction(pool, period, work) {
@@ -299,11 +303,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     } else if (view === 'accounting') {
       content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태 · 모의', '생성 시각 · 모의'],
         list.filter(entry => saved.get(entry.group.groupId)?.created_at).map(entry => [
-          groupLink(entry), members(entry), money(entry.totalKrw), statusFor(entry), time(saved.get(entry.group.groupId).created_at),
+          groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
     } else if (view === 'followup') {
       content = '<h2>소명 요청 작업</h2>' + table(['요청 · 계산', '거래처 · 원본', '상태 · 모의'],
-        list.filter(entry => onHold(stateFor(entry))).map(entry => [groupLink(entry), members(entry), statusFor(entry)]));
+        list.filter(entry => onHold(stateFor(entry))).map(entry => [groupLink(entry), members(entry), statusBadge(statusFor(entry))]));
     } else if (item) {
       const record = saved.get(groupId);
       const ids = new Set(item.group.members.map(member => member.agencyId));
@@ -375,29 +379,32 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ]]) +
         table(['요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태 · 모의'],
           list.map(entry => [groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver),
-            statusFor(entry)]));
+            statusBadge(statusFor(entry))]));
     }
 
+    const navigation = {
+      requests: '승인 요청', followup: '소명 요청', accounting: '회계 작업',
+      documents: '텍스트 서류', review: '재검토 대상', 'ai-log': 'AI 호출 기록',
+    };
+    const activeView = Object.hasOwn(navigation, view) ? view : 'requests';
+    const menu = Object.entries(navigation).map(([key, label]) =>
+      '<a href="' + link(key === 'requests' ? {} : { view: key }) + '"' +
+      (key === activeView ? ' aria-current="page"' : '') + '>' + label + '</a>').join('');
     send(200, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>W07 판매장려금 지급 검토</title><style>
-body{font:16px system-ui,sans-serif;margin:2rem auto;padding:0 1rem;max-width:75rem;color:#17212d}
-table{border-collapse:collapse;width:100%;margin:1rem 0;overflow-wrap:anywhere}
-th,td{text-align:left;padding:.55rem;border:1px solid #ccd2db;vertical-align:top}
-th{background:#f3f5f8}button,select,textarea{font:inherit}nav,form{margin:1rem 0}
-fieldset{border:1px solid #ccd2db}textarea{vertical-align:middle;width:min(100%,34rem)}
-</style></head><body><main><h1>W07 판매장려금 지급 검토</h1>
-<form method="get"><label>정산월 <select name="period">${options(periods, period)}</select></label>
+<title>${navigation[activeView]} | 판매장려금 지급 검토</title><style>${workspaceStyles}</style></head><body>
+<div class="workspace">
+<aside class="sidebar"><p class="brand">판매장려금 지급 검토</p><nav aria-label="업무 메뉴">${menu}</nav></aside>
+<main><header class="toolbar"><h1>${navigation[activeView]}</h1>
+<form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
 <label>시연 역할 <select name="role">${options(roles, role)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 ${['accounting', 'followup', 'documents', 'review', 'ai-log'].includes(view) ? '<input type="hidden" name="view" value="' + escape(view) + '">' : ''}
-<button>적용</button></form>
-<nav><a href="${link({})}">승인 요청 목록</a> · <a href="${link({ view: 'followup' })}">소명 요청 작업 목록</a> · <a href="${link({ view: 'accounting' })}">회계 작업 목록</a></nav>
-<nav><a href="${link({ view: 'documents' })}">텍스트 서류</a> · <a href="${link({ view: 'review' })}">재검토 대상</a> · <a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></nav>
-${content}
-<details><summary>정산월 초기화</summary><p>${escape(period)}의 공유 결정·소명·서류·변경·AI 이력·회계 작업을 초기화합니다.</p>
+<button class="primary">적용</button></form></header>
+<div class="content">${content}</div>
+<details class="reset"><summary>정산월 초기화</summary><p>${escape(period)}의 공유 결정·소명·서류·변경·AI 이력·회계 작업을 초기화합니다.</p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></details>
-</main><script>
+</main></div><script>
 for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListener('submit',async event=>{
   event.preventDefault();
   const button=event.submitter;
