@@ -132,7 +132,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         LEFT JOIN w07_accounting_task t USING (period, group_id) WHERE d.period = $1`, [period]);
       const history = await db.query('SELECT * FROM w07_event WHERE period = $1 ORDER BY id', [period]);
       const docs = await db.query('SELECT * FROM w07_document WHERE period = $1 ORDER BY id', [period]);
-      const calls = await db.query('SELECT * FROM w07_ai_call WHERE period = $1 ORDER BY id', [period]);
+      const calls = view === 'ai-log'
+        ? await db.query('SELECT * FROM w07_ai_call ORDER BY id')
+        : await db.query('SELECT * FROM w07_ai_call WHERE period = $1 ORDER BY id', [period]);
       return { reviews: reviews.rows, rows: decisions.rows, events: history.rows, documents: docs.rows, calls: calls.rows };
     });
     const { reviews, rows, events, documents, calls } = snapshot;
@@ -571,7 +573,7 @@ for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListe
   message.textContent='AI 요청 중 · 직접 입력 가능';
   form.after(message);
   try {
-    const response=await fetch(form.action,{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
+    const response=await fetch(form.getAttribute('action'),{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
     if(!response.ok) throw Error();
     message.replaceChildren();
     const link=document.createElement('a');
