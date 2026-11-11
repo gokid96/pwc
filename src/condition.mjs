@@ -38,8 +38,8 @@ export async function callAssistant(kind, input, { run = openAI, timeout = 8000 
     if (!Array.isArray(raw?.evidence) || !raw.evidence.every(value => typeof value === 'string') ||
         typeof raw?.draft !== 'string' || !raw.draft.trim()) throw new Error('Invalid draft');
     return { request, raw, result: { evidence: raw.evidence.slice(0, 8), draft: raw.draft.slice(0, 1000) } };
-  } catch {
-    return { request, raw: raw ?? null, result: null };
+  } catch (error) {
+    return { request, raw: raw ?? { error: error.message }, result: null };
   }
 }
 

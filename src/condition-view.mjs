@@ -29,7 +29,9 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
     : 'AI 추출 요청 중 · 직접 입력 가능' : '추출 전 · 직접 입력 가능';
   html += '<h3>접수 ' + escape(selected.id) + ' · ' + escape(selected.agency_id) + '</h3><p>' + status + '</p>' +
     '<form method="post" action="' + action + '" data-ai><fieldset' + disabled + '>' +
-    post('document_extract', 'AI 추출') + '</fieldset></form>' +
+    post('document_extract', 'AI 추출') + ' ' +
+    (Object.values(samples).some(([, text]) => text === selected.original)
+      ? post('document_timeout', '모의 서류로 시간 초과 확인') : '') + '</fieldset></form>' +
     '<form method="post" action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
     '><legend>담당자 확인</legend>' +
     table(['원문', '추출 후보 · 줄 번호', '확인 값 · 모의'], [[

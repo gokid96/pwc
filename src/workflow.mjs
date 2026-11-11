@@ -1,5 +1,5 @@
 import { steps, labels, followupState, followupError } from './followup.mjs';
-import { applyChanges, callAssistant, fields, individualExceedance, reviewScope } from './condition.mjs';
+import { applyChanges, callAssistant, fields, individualExceedance, reviewScope, samples } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
 
 const roles = ['영업지원팀', '영업임원', '회계'];
@@ -135,7 +135,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       const action = form.get('action');
       const reason = (form.get('reason') ?? '').trim();
-      if (['document_add', 'document_extract', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft'].includes(action)) {
+      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft'].includes(action)) {
         if (role !== roles[0]) return send(403, '영업지원 역할이 필요합니다.');
         if (action === 'document_add') {
           const agency = form.get('agency');
@@ -146,15 +146,19 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             'INSERT INTO w07_document (period,agency_id,original) VALUES ($1,$2,$3) RETURNING id', [period, agency, original]));
           return redirect({ view: 'documents', document: saved.id });
         }
-        if (action === 'document_extract' || action === 'ai_draft') {
+        if (['document_extract', 'document_timeout', 'ai_draft'].includes(action)) {
           const draft = action === 'ai_draft';
           const decision = rows.find(row => row.group_id === groupId);
           const latest = events.filter(event => event.group_id === groupId).at(-1);
           const state = followupState(decision, latest?.action, item?.exceedsLimit);
           if (draft ? !['draft', 'received'].includes(state) : !document) return send(409, '현재 단계에서 사용할 수 없습니다.');
+          const timeoutCheck = action === 'document_timeout';
+          if (timeoutCheck && !Object.values(samples).some(([, text]) => text === document.original)) {
+            return send(400, '기본 모의 서류만 시간 초과를 확인할 수 있습니다.');
+          }
           const input = draft ? {
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
-            sharedDeposits: item.collectionEvidence.map(entry => ({ accountEnding: entry.account.slice(-4),
+            sharedDeposits: item.collectionEvidence.map(entry => ({
               agencies: [...new Set(entry.deposits.map(row => row.agencyId))] })),
             reason: decision.reason,
           } : { text: document.original };
@@ -170,7 +174,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             return saved.id;
           });
           if (callId) {
-            const output = await assistant(kind, input);
+            const output = await assistant(kind, input, timeoutCheck ? { timeout: 1 } : undefined);
             await pool.query('UPDATE w07_ai_call SET request=$2,raw=$3,result=$4,finished_at=now() WHERE id=$1',
               [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), output.result]);
           }
