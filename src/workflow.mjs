@@ -415,7 +415,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
         '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
-        '<p class="next-task"><strong>다음 할 일</strong> ' + nextTask + '</p>' +
+        '<p class="next-task">' + nextTask + '</p>' +
         decision + followup +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
@@ -482,7 +482,7 @@ ${['accounting', 'followup', 'documents', 'review', 'ai-log'].includes(view) ? '
 <details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></div></details></div></header>
-<div class="content">${detailView ? '' : '<p class="next-task"><strong>다음 할 일</strong> ' + nextTask + '</p>'}${content}</div>
+<div class="content">${detailView ? '' : '<p class="next-task">' + nextTask + '</p>'}${content}</div>
 <footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값 · 모의는 시연용 서류와 외부 처리 · 프로젝트 가정은 시연에서 적용한 기준</p>
 <p>가상 기업 Aurora 그룹 데이터 기반 시연 / 외부 발송과 지급은 모의 처리</p></footer>
 </main></div><script>
