@@ -67,6 +67,18 @@ tbody tr:hover{background:#fafbfd}
 .summary-card{padding:1rem;border:1px solid var(--border);border-radius:8px;background:#fff}
 .summary-card p{margin:0;color:var(--muted);font-size:.9rem}
 .summary-card strong{display:inline-block;margin-top:.3rem;font-size:1.55rem;font-variant-numeric:tabular-nums}
+.summary-card:last-child strong{font-size:1.1rem}
+.detail-cards{grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr))}
+.detail-cards .summary-card strong{font-size:1.1rem;overflow-wrap:anywhere}
+.decision-explanation{margin:0 0 1.2rem}
+.decision-panel{padding:1rem;border:1px solid var(--border);border-radius:8px;background:#f7f9fc}
+.decision-panel h3{margin:0 0 .5rem}
+.decision-panel form{margin-bottom:0}
+.decision-notice{color:var(--muted);margin:.25rem 0}
+.content .evidence{margin-top:1rem}
+details.evidence{padding:.75rem 1rem;border:1px solid var(--border);border-radius:7px}
+.evidence>summary{font-weight:650}
+.locations{margin:.65rem 0;color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}
 .executive-row td{background:#f1f5ff}
 .executive-row td:first-child{box-shadow:inset 3px 0 var(--accent)}
 .executive-row td:nth-child(4){color:var(--accent);font-weight:700}

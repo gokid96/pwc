@@ -21,10 +21,25 @@ function table(headers, rows, { origins = [], highlight = [] } = {}) {
       header.endsWith(' · 계산') ? '계산' : ''));
   const title = header => header.replace(/ · (원본|계산|모의)$/, '').replace(/^원본 행$/, '자료 위치').replace(/^원본 상태$/, '지급 상태');
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
-    headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + title(header) + '</th>').join('') +
+    headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + title(header) +
+      (origin[index] ? originBadge(origin[index]) : '') + '</th>').join('') +
     '</tr></thead><tbody>' + rows.map((row, rowIndex) => (highlight[rowIndex] ? '<tr class="executive-row">' : '<tr>') + row.map((cell, index) =>
-      '<td' + columnClass[index] + '>' + cell + (origin[index] && cell ? originBadge(origin[index]) : '') + '</td>').join('') +
+      '<td' + columnClass[index] + '>' + cell + '</td>').join('') +
     '</tr>').join('') + '</tbody></table></div>';
+}
+
+function locations(rows) {
+  if (!rows.length) return '';
+  return '<details class="locations"><summary>자료 위치 보기</summary><ul>' +
+    rows.map(([label, refs]) => '<li>' + escape(label) + ' · ' + refs.map(source).join(', ') + '</li>').join('') +
+    '</ul></details>';
+}
+
+function evidence(title, origin, content, refs, collapsed = false) {
+  const heading = title + (origin ? originBadge(origin) : '');
+  const body = content + locations(refs);
+  return collapsed ? '<details class="evidence"><summary>' + heading + '</summary>' + body + '</details>'
+    : '<section class="evidence"><h3>' + heading + '</h3>' + body + '</section>';
 }
 
 async function transaction(pool, period, work) {
@@ -344,35 +359,64 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const timeline = [...history, ...(record ? [record] : []),
         ...(record?.created_at ? [{ acted_at: record.created_at, role: '시스템', action: 'accounting',
           reason: '승인 결과 반영' }] : [])].sort((a, b) => a.acted_at - b.acted_at);
-      content = '<h2>요청 ' + escape(groupId) + '</h2><p>구성 거래처 ' + members(item) + originBadge('원본') +
-        ' | 합계 ' + money(item.totalKrw) + originBadge('계산') + ' | 승인권자 ' + escape(item.approver) + originBadge('계산') +
-        ' | 상태 ' + statusFor(item) + '</p>' +
-        (isAffected(item) ? '<p><a href="' + link({ view: 'review' }) + '">변경 전후와 실제 승인 경로 확인</a></p>' : '') +
-        '<h3>관련 거래처 근거</h3>' +
-        (item.group.links.length ? table(['거래처', '일치 항목 · 계산', '원본 행'], item.group.links.map(entry =>
-          [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', '),
-            entry.sources.map(source).join('<br>')])) : '<p>단독 거래처</p>') +
-        '<h3>거래처별 장려금</h3>' + table(['거래처 · 원본', '금액 · 원본', '원본 행'],
-          item.rebateRows.map(row => [escape(row.agencyId), money(row.amountKrw), source(row.source)])) +
-        '<h3>이전 정산월 지급 기록</h3><p>현재 그룹 구성원 기준</p>' +
-        table(['정산월 · 원본', '거래처 · 원본', '금액 · 원본', '원본 상태', '승인자 · 원본', '지급일 · 원본', '원본 행'], historical.map(row =>
-          [row.period_ym, row.agency_id, money(Number(row.rebate_amount_krw)), row.approval_status,
-            row.approver, row.payment_date].map(escape).concat(source(row.source)))) +
-        '<h3>입금 기록</h3>' +
-        table(['거래처 · 원본', '입금일 · 원본', '입금계좌 · 원본', '원본 행'], deposits.map(row =>
-          [escape(row.agency_id), escape(row.deposit_date), mask(row.bank_account_no), source(row.source)])) +
-        '<h3>입금계좌 대조</h3><p>회수 기록과 정산계좌 일치 근거 · 계좌 끝자리만 표시</p>' +
-        table(['입금계좌 · 원본', '회수 기록 · 원본', '정산계좌 일치 · 계산'], item.collectionEvidence.map(entry => [
-          mask(entry.account),
-          entry.deposits.map(row => [escape(row.agencyId), escape(row.depositDate), source(row.source)].join(' · ')).join('<br>'),
-          entry.registered.map(row => escape(row.agencyId) + ' · ' + source(row.source)).join('<br>'),
-        ])) +
-        '<h3>결정</h3><form method="post" action="' + link({ group: groupId }) +
+      const cards = [
+        ['구성 거래처', members(item), '원본'],
+        ['합계', money(item.totalKrw), '계산'],
+        ['승인권자', escape(item.approver), '계산'],
+        ['현재 상태', statusBadge(statusFor(item))],
+      ];
+      const matching = [...new Set(item.group.links.flatMap(entry => entry.matchedFields))];
+      const groupReason = matching.length
+        ? item.group.members.length + '개 거래처가 거래처 쌍별 ' +
+          matching.map(field => fields[field]).join('·') + ' 일치를 근거로 한 묶음입니다.'
+        : '단독 거래처로 심사합니다.';
+      const retainedReason = retained(item);
+      const amountReason = retainedReason
+        ? '등록 정보가 바뀌었지만 동일 입금계좌 근거가 남아 기존 영업임원 승인 경로를 유지합니다.'
+        : '합계가 200만원' + (item.exceedsLimit ? '을 넘어 ' : ' 이하여서 ') + item.approver + ' 승인 대상입니다.';
+      const decisionNotice = isAffected(item) ? '이 건은 정보 변경 재검토 중입니다.'
+        : role !== item.approver ? '이 건은 ' + item.approver + '만 결정할 수 있습니다.'
+          : record ? '이 건의 결정이 이미 기록되었습니다. 다음 단계는 후속 작업에서 확인할 수 있습니다.' : '';
+      const decision = '<section class="decision-panel"><h3>결정</h3>' +
+        (decisionNotice ? '<p class="decision-notice">' + escape(decisionNotice) + '</p>' : '') +
+        '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset' + (enabled ? '' : ' disabled') +
         '><legend>시연 역할 ' + escape(role) + '</legend><label>사유 <textarea name="reason" maxlength="1000"></textarea></label>' +
         '<p>거절과 추가 확인 요청은 사유 필수</p>' +
         Object.entries(decisions).map(([value, label]) => '<button name="action" value="' + value + '">' + label + '</button> ').join('') +
-        '</fieldset></form>' + followup + '<h3>처리 이력</h3>' +
+        '</fieldset></form></section>';
+      const groupLinks = item.group.links;
+      const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
+        .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
+      content = '<h2>요청 ' + escape(groupId) + '</h2><div class="summary-cards detail-cards">' +
+        cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
+          (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
+        '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
+        (isAffected(item) ? '<p><a href="' + link({ view: 'review' }) + '">변경 전후와 실제 승인 경로 확인</a></p>' : '') +
+        decision + followup +
+        evidence('관련 거래처 근거', '계산', groupLinks.length
+          ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
+            [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', ')]))
+          : '<p>단독 거래처</p>',
+        item.group.members.map(member => [member.agencyId, [member.source]])) +
+        evidence('거래처별 장려금', '원본', table(['거래처', '금액'],
+          item.rebateRows.map(row => [escape(row.agencyId), money(row.amountKrw)])),
+        item.rebateRows.map(row => [row.agencyId + ' · ' + row.rebateId, [row.source]])) +
+        evidence('이전 정산월 지급 기록', '원본', '<p>현재 그룹 구성원 기준</p>' +
+          table(['정산월', '거래처', '금액', '지급 상태', '승인자', '지급일'], historical.map(row =>
+            [row.period_ym, row.agency_id, money(Number(row.rebate_amount_krw)), row.approval_status,
+              row.approver, row.payment_date].map(escape))),
+        historical.map(row => [row.period_ym + ' · ' + row.agency_id, [row.source]]), true) +
+        evidence('입금 기록', '원본', table(['거래처', '입금일', '입금계좌'], deposits.map(row =>
+          [escape(row.agency_id), escape(row.deposit_date), mask(row.bank_account_no)])),
+        deposits.map(row => [row.agency_id + ' · ' + row.deposit_date, [row.source]]), true) +
+        evidence('입금계좌 대조', '', '<p>계좌 끝자리만 표시합니다.</p>' +
+          table(['입금계좌 · 원본', '회수 기록 · 원본', '정산계좌 일치 · 계산'], item.collectionEvidence.map(entry => [
+            mask(entry.account),
+            entry.deposits.map(row => escape(row.agencyId) + ' · ' + escape(row.depositDate)).join('<br>'),
+            entry.registered.map(row => escape(row.agencyId)).join('<br>'),
+          ])), collectionRefs, true) +
+        '<h3>처리 이력</h3>' +
         table(['시각', '시연 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
           (steps[event.action]?.[3].replace('모의 ', '') ?? decisions[event.action] ?? '회계 지급 검토 작업 생성') +
@@ -382,11 +426,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const cards = [
         ['이번 달 승인 요청 수', list.length + '건'],
         ['영업임원 승인 대상 수', list.filter(entry => entry.approver === '영업임원').length + '건'],
-        ['거래처별 대 관련자 합산 · 200만원 초과', individualExceedance(data.rebates, period) +
-          '건 대 ' + current.filter(entry => entry.exceedsLimit).length + '건'],
+        ['200만원 초과 건', '거래처별로 보면 ' + individualExceedance(data.rebates, period) +
+          '건 → 묶어서 보면 ' + current.filter(entry => entry.exceedsLimit).length + '건'],
       ];
       content = '<div class="summary-cards">' + cards.map(([label, value]) =>
-        '<div class="summary-card"><p>' + label + '</p><strong>' + value + '</strong>' + originBadge('계산') + '</div>').join('') +
+        '<div class="summary-card"><p>' + label + originBadge('계산') + '</p><strong>' + value + '</strong></div>').join('') +
         '</div><h2>승인 요청 목록</h2>' +
         table(['요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태 · 모의'],
           list.map(entry => [groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver),
@@ -395,7 +439,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
 
     const navigation = {
       requests: '승인 요청', followup: '소명 요청', accounting: '회계 작업',
-      documents: '텍스트 서류', review: '재검토 대상', 'ai-log': 'AI 호출 기록',
+      documents: '대리점 서류 접수', review: '정보 변경 재검토', 'ai-log': 'AI 호출 기록',
     };
     const activeView = Object.hasOwn(navigation, view) ? view : 'requests';
     const menu = Object.entries(navigation).map(([key, label]) =>
