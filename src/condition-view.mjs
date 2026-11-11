@@ -1,8 +1,9 @@
-import { fields, samples } from './condition.mjs';
+import { documentSamples, fields } from './condition.mjs';
 import { originBadge } from './workspace-view.mjs';
 
-export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role }) {
-  const canEdit = role === '영업지원팀';
+export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role, open }) {
+  const canEdit = open && role === '영업지원팀';
+  const samples = documentSamples(data);
   const selected = documents.find(row => row.id === selectedId);
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
   const post = (name, label) => '<button name="action" value="' + name + '">' + label + '</button>';
@@ -15,9 +16,9 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
     '</select></label> <label>.txt <input type="file" id="text-file" accept=".txt,text/plain"></label>' +
     '<div class="sample-buttons">' + Object.entries(samples).map(([id, [name]]) =>
       '<button type="button" data-sample="' + id + '">' + name + ' · 추가 자료</button>').join(' ') + '</div>' +
-    '<p><label>서류 내용 ' + originBadge('모의') + ' <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
+    '<p><label>서류 내용 <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
     post('document_add', '접수') + '</fieldset></form>' +
-    '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))) +
+    '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))).replace(/</g, '\\u003c') +
     ';const original=document.getElementById("document-text");' +
     'for(const button of document.querySelectorAll("[data-sample]"))button.onclick=()=>{const sample=button.dataset.sample;original.value=sampleText[sample];button.form.elements.agency.value=sample==="explanation"?"D-024":"D-011";};' +
     'document.getElementById("text-file").onchange=async(e)=>{const f=e.target.files[0];if(f&&/\\.txt$/i.test(f.name)&&f.size<=24000)original.value=(await f.text()).slice(0,6000);};</script>' +
@@ -33,11 +34,11 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
     '<form method="post" action="' + action + '" data-ai><fieldset' + disabled + '>' +
     post('document_extract', 'AI 추출') + ' ' +
     (Object.values(samples).some(([, text]) => text === selected.original)
-      ? post('document_timeout', '시간 초과 확인' + originBadge('모의')) : '') + '</fieldset></form>' +
+      ? post('document_timeout', '시간 초과 확인') : '') + '</fieldset></form>' +
     '<form method="post" action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
     '><legend>담당자 확인</legend>' +
     table(['서류 내용', '추출 후보 · 줄 번호', '확인 값'], [[
-      originBadge('모의') + '<pre>' + escape(selected.original) + '</pre>',
+      '<pre>' + escape(selected.original) + '</pre>',
       Object.entries(fields).map(([key, label]) => {
         const result = latest?.result?.[key];
         return '<p>' + label + ' · ' + (result?.needsReview !== false ? '확인 필요' : '후보 1개') +

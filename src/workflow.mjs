@@ -1,5 +1,5 @@
 import { steps, labels, followupState, followupError } from './followup.mjs';
-import { applyChanges, callAssistant, fields, individualExceedance, reviewScope, samples } from './condition.mjs';
+import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope, summaryChecks } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
 import { workspaceStyles, statusBadge, originBadge } from './workspace-view.mjs';
 import { approveSupportRequests } from './bulk-approval.mjs';
@@ -114,6 +114,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const original = calculate(data);
     const periods = [...new Set(original.requests.map(item => item.period))].sort().reverse();
     const period = query.get('period') ?? periods[0];
+    const open = isOpenPeriod(data.rebates, period);
     const groupId = query.get('groupPeriod') && query.get('groupPeriod') !== period ? null : query.get('group');
     const view = query.get('view');
     const documentId = query.get('document');
@@ -173,6 +174,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       const action = form.get('action');
       const reason = (form.get('reason') ?? '').trim();
+      if (!open && action !== 'reset') return send(403, '원본에 미지급 건이 없는 정산월은 조회만 할 수 있습니다.');
       if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_summary'].includes(action)) {
         if (role !== roles[0] && action !== 'ai_summary') return send(403, '영업지원 역할이 필요합니다.');
         if (action === 'document_add') {
@@ -195,7 +197,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             return send(409, '현재 단계에서 사용할 수 없습니다.');
           }
           const timeoutCheck = action === 'document_timeout';
-          if (timeoutCheck && !Object.values(samples).some(([, text]) => text === document.original)) {
+          if (timeoutCheck && !Object.values(documentSamples(data)).some(([, text]) => text === document.original)) {
             return send(400, '기본 모의 서류만 시간 초과를 확인할 수 있습니다.');
           }
           const input = groupCall ? {
@@ -206,6 +208,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             ...(draft ? { reason: decision.reason } : {
               approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
               options: !decision && !isAffected(item) ? Object.values(decisions) : [],
+              allowedChecks: ['registration', ...(item.group.links.length ? ['relationship'] : []),
+                ...(item.collectionEvidence.length ? ['sharedDeposit'] : [])],
             }),
           } : { text: document.original };
           const kind = summary ? 'summary' : draft ? 'draft' : 'extract';
@@ -331,6 +335,12 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       eventsFor(entry.group.groupId).at(-1)?.action, entry.exceedsLimit);
     const onHold = state => ['draft', 'waiting', 'received', 'verified'].includes(state);
     const statusFor = entry => {
+      if (!open) {
+        const ids = new Set(entry.rebateRows.map(row => row.rebateId));
+        const statuses = [...new Set(data.rebates.filter(row => ids.has(row.rebate_id)).map(row =>
+          /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date) ? '지급 완료' : row.approval_status))];
+        return statuses.join(' · ');
+      }
       if (isAffected(entry)) return '재검토 필요' + (saved.get(entry.group.groupId)?.created_at ? ' · 확인 대기' : '');
       const state = stateFor(entry);
       if (onHold(state)) return '보류 · ' + labels[state];
@@ -347,7 +357,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     if (view === 'documents') {
       nextTask = '대리점 서류를 접수하거나 접수 목록을 확인하세요.';
       content = documentView({ data, documents, calls, selectedId: documentId, selectedAgency: query.get('agency'),
-        link: extras => link({ ...extras, ...caseContext }), escape, table, role });
+        link: extras => link({ ...extras, ...caseContext }), escape, table, role, open });
     } else if (view === 'review') {
       nextTask = '변경된 승인 경로와 재검토 대상을 확인하세요.';
       content = reviewView(reviews, { escape, table, source, money, link });
@@ -372,14 +382,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         .sort((a, b) => a.period_ym.localeCompare(b.period_ym));
       const deposits = data.collections.filter(row => ids.has(row.agency_id));
       const fields = { representative_name: '대표자', address: '주소', bank_account_no: '정산계좌' };
-      const enabled = role === item.approver && !record && !isAffected(item);
+      const enabled = open && role === item.approver && !record && !isAffected(item);
       const history = eventsFor(groupId);
       const state = stateFor(item);
       const revision = '<input type="hidden" name="revision" value="' + escape(history.at(-1)?.id ?? '0') + '">';
-      const actions = Object.entries(steps).filter(([, [from]]) => from === state);
+      const actions = open ? Object.entries(steps).filter(([, [from]]) => from === state) : [];
       const draft = calls.filter(call => call.kind === 'draft' && call.group_id === groupId &&
         call.created_at >= (record?.acted_at ?? new Date(0))).at(-1);
-      const canDraft = ['draft', 'received'].includes(state) && role === roles[0] && !isAffected(item);
+      const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0] && !isAffected(item);
       const draftForm = canDraft ? '<p>요청할 증빙 · 프로젝트 가정</p>' +
         (draft?.result ? '<ul>' + draft.result.evidence.map(value => '<li>' + escape(value) + '</li>').join('') + '</ul>'
           : draft?.finished_at ? '<p>AI 초안 생성 실패, 직접 작성</p>' : '') +
@@ -416,7 +426,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const amountReason = retainedReason
         ? '동일 입금계좌 기록으로 영업임원 승인 경로를 유지합니다.'
         : '합계가 200만원' + (item.exceedsLimit ? '을 넘어 ' : ' 이하여서 ') + item.approver + ' 승인 대상입니다.';
-      if (isAffected(item)) {
+      if (!open) {
+        nextTask = '처리된 정산월입니다. 지급 기록을 조회할 수 있습니다.';
+      } else if (isAffected(item)) {
         nextTask = '정보 변경 재검토에서 승인 경로를 확인하세요. <a href="' + link({ view: 'review' }) + '">바로 가기</a>';
       } else if (record?.action === 'approve') {
         nextTask = '회계 작업에서 지급 검토를 확인하세요. <a href="' + link({ view: 'accounting', role: '회계' }) + '">바로 가기</a>';
@@ -442,11 +454,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         call.created_at >= (record?.acted_at ?? new Date(0)) &&
         call.created_at >= (history.at(-1)?.acted_at ?? new Date(0)) &&
         !reviews.some(review => review.created_at > call.created_at && review.details.scope.agencies.some(id => ids.has(id)))).at(-1);
-      const aiSummary = '<section class="ai-summary"><h3>AI 근거 요약</h3>' +
-        (summaryCall?.result ? '<p>' + summaryCall.result.sentences.map(escape).join(' ') + '</p>' :
+      const check = Object.hasOwn(summaryChecks, summaryCall?.result?.check) ? summaryChecks[summaryCall.result.check] : '';
+      const choices = open && !record && !isAffected(item)
+        ? item.approver + '은 ' + Object.values(decisions).join(', ') + ' 중 선택할 수 있습니다.' : '';
+      const aiSummary = (open || check) ? '<section class="ai-summary"><h3>AI 근거 요약</h3>' +
+        (check ? '<p>' + [groupReason, amountReason, check, choices].filter(Boolean).map(escape).join(' ') + '</p>' :
           summaryCall?.finished_at ? '<p>AI 설명 없음 · 근거 표만 확인</p>' : '') +
-        '<form method="post" data-ai action="' + link({ group: groupId }) +
-        '"><button name="action" value="ai_summary">근거 요약 생성</button></form></section>';
+        (open ? '<form method="post" data-ai action="' + link({ group: groupId }) +
+          '"><button name="action" value="ai_summary">근거 요약 생성</button></form>' : '') + '</section>' : '';
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
       const relatedDocs = documents.filter(row => ids.has(row.agency_id));
@@ -478,7 +493,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             escape(row.agency_id) + ' · ' + (row.kind === 'change' ? '계좌 변경' : '그룹 확인') + '</a>').join('<br>') : '아직 없습니다'],
           ['회계 작업', record?.created_at ? '<a href="' + link({ view: 'accounting', group: groupId, role: '회계' }) +
             '">' + statusFor(item) + '</a>' : '아직 없습니다'],
-        ]) + intake + '</section>';
+        ]) + (open ? intake : '') + '</section>';
       content = '<h2>요청 ' + escape(groupId) + '</h2><div class="summary-cards detail-cards">' +
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
@@ -522,7 +537,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       ];
       const priority = entry => isAffected(entry) || onHold(stateFor(entry)) ? 0 : entry.exceedsLimit ? 1 : 2;
       const ordered = [...list].sort((left, right) => priority(left) - priority(right));
-      const selectable = entry => role === roles[0] && entry.approver === roles[0] &&
+      const selectable = entry => open && role === roles[0] && entry.approver === roles[0] &&
         !entry.exceedsLimit && !isAffected(entry) && !saved.has(entry.group.groupId);
       const bulk = ordered.some(selectable);
       const requestTable = table([...(bulk ? ['선택'] : []), '요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태'],

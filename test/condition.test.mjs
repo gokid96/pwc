@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applyChanges, callAssistant, individualExceedance, reviewScope, samples } from '../src/condition.mjs';
+import { applyChanges, callAssistant, documentSamples, individualExceedance, isOpenPeriod, reviewScope, samples } from '../src/condition.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 
 test('AI candidates require source text and flag omitted or conflicting values', async () => {
@@ -29,6 +29,16 @@ test('AI candidates require source text and flag omitted or conflicting values',
 test('June account change preserves original data and finds earlier paid approvals', async () => {
   const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
   const before = calculateW07(data);
+  assert.equal(isOpenPeriod(data.rebates, '2026-06'), true);
+  for (const month of ['01', '02', '03', '04', '05']) {
+    assert.equal(isOpenPeriod(data.rebates, '2026-' + month), false);
+  }
+  const agency = data.agencies.find(row => row.agency_id === 'D-011');
+  const sample = documentSamples(data).change[1];
+  assert.ok(sample.includes(agency.representative_name) && sample.includes(agency.address));
+  assert.doesNotMatch(sample, /모의/);
+  const newAccount = sample.split('신규 정산계좌: ')[1].replace(/\D/g, '');
+  assert.ok([...data.agencies, ...data.collections].every(row => row.bank_account_no.replace(/\D/g, '') !== newAccount));
   const updated = applyChanges(data, [{
     kind: 'change', agency_id: 'D-011', details: { afterAccount: '모의은행 999-000-1101' },
   }]);
@@ -43,12 +53,11 @@ test('June account change preserves original data and finds earlier paid approva
   assert.equal(before.requests.filter(row => row.period === '2026-06' && row.exceedsLimit).length, 1);
 });
 
-test('approval summary accepts three or four sentences and logs malformed output', async () => {
-  const input = { agencies: ['D-011'], options: ['승인', '거절', '추가 확인 요청'] };
-  const sentences = ['등록 정보의 일치 항목이 있습니다.', '거래처 관계를 확인할 수 있습니다.', '승인권자가 결정을 선택합니다.'];
-  const valid = await callAssistant('summary', input, { run: async () => ({ sentences }) });
-  assert.deepEqual(valid.result, { sentences });
-  const invalid = await callAssistant('summary', input, { run: async () => ({ sentences: ['한 문장'] }) });
+test('approval summary accepts only checks supported by the computed evidence', async () => {
+  const input = { agencies: ['D-011'], options: ['승인', '거절', '추가 확인 요청'], allowedChecks: ['registration'] };
+  const valid = await callAssistant('summary', input, { run: async () => ({ check: 'registration' }) });
+  assert.deepEqual(valid.result, { check: 'registration' });
+  const invalid = await callAssistant('summary', input, { run: async () => ({ check: 'sharedDeposit' }) });
   assert.equal(invalid.result, null);
-  assert.match(invalid.raw.error, /3~4문장/);
+  assert.match(invalid.raw.error, /연결할 수 없는 확인 항목/);
 });
