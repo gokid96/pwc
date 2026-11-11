@@ -61,13 +61,17 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
   return html;
 }
 
-export function aiLog(calls, escape) {
-  return '<h2>AI 요청·응답 기록</h2>' + calls.map(row =>
-    '<details><summary>' + escape(row.created_at.toISOString()) + ' · ' +
-    (row.kind === 'draft' ? '요청서 초안' : '서류 추출') + ' · ' +
-    (row.finished_at ? row.result ? '완료' : '실패' : '처리 중') + '</summary>' +
-    '<h3>전송 내용</h3><pre>' + escape(JSON.stringify(row.request, null, 2)) +
-    '</pre><h3>응답</h3><pre>' + escape(JSON.stringify(row.raw, null, 2)) + '</pre></details>').join('');
+export function aiLog(calls, escape, table, time) {
+  const labels = { draft: '소명 요청서 초안', extract: '서류 추출', summary: '승인 근거 요약' };
+  return '<h2>AI 요청·응답 기록</h2>' + table(['호출 시각 (한국)', '용도', '결과', '실패 사유', '상세'],
+    [...calls].reverse().map(row => [
+      time(row.created_at), escape(labels[row.kind] ?? row.kind),
+      row.finished_at ? row.result ? '성공' : '실패' : '처리 중',
+      row.finished_at && !row.result ? escape(row.raw?.error ?? '응답을 처리할 수 없습니다.') : '—',
+      '<details><summary>요청·응답 보기</summary><h3>전송 내용</h3><pre>' +
+        escape(JSON.stringify(row.request, null, 2)) + '</pre><h3>응답</h3><pre>' +
+        escape(JSON.stringify(row.raw, null, 2)) + '</pre></details>',
+    ]));
 }
 
 export function reviewView(records, { escape, table, source, money, link }) {

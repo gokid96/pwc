@@ -171,8 +171,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       const action = form.get('action');
       const reason = (form.get('reason') ?? '').trim();
-      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft'].includes(action)) {
-        if (role !== roles[0]) return send(403, '영업지원 역할이 필요합니다.');
+      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_summary'].includes(action)) {
+        if (role !== roles[0] && action !== 'ai_summary') return send(403, '영업지원 역할이 필요합니다.');
         if (action === 'document_add') {
           const agency = form.get('agency');
           const original = form.get('text')?.trim();
@@ -182,25 +182,33 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             'INSERT INTO w07_document (period,agency_id,original) VALUES ($1,$2,$3) RETURNING id', [period, agency, original]));
           return redirect({ view: 'documents', document: saved.id, ...caseContext });
         }
-        if (['document_extract', 'document_timeout', 'ai_draft'].includes(action)) {
+        if (['document_extract', 'document_timeout', 'ai_draft', 'ai_summary'].includes(action)) {
           const draft = action === 'ai_draft';
+          const summary = action === 'ai_summary';
+          const groupCall = draft || summary;
           const decision = rows.find(row => row.group_id === groupId);
           const latest = events.filter(event => event.group_id === groupId).at(-1);
           const state = followupState(decision, latest?.action, item?.exceedsLimit);
-          if (draft ? !['draft', 'received'].includes(state) : !document) return send(409, '현재 단계에서 사용할 수 없습니다.');
+          if (summary ? !item : draft ? !['draft', 'received'].includes(state) : !document) {
+            return send(409, '현재 단계에서 사용할 수 없습니다.');
+          }
           const timeoutCheck = action === 'document_timeout';
           if (timeoutCheck && !Object.values(samples).some(([, text]) => text === document.original)) {
             return send(400, '기본 모의 서류만 시간 초과를 확인할 수 있습니다.');
           }
-          const input = draft ? {
+          const input = groupCall ? {
+            agencies: item.group.members.map(member => member.agencyId),
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
             sharedDeposits: item.collectionEvidence.map(entry => ({
               agencies: [...new Set(entry.deposits.map(row => row.agencyId))] })),
-            reason: decision.reason,
+            ...(draft ? { reason: decision.reason } : {
+              approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
+              options: !decision && !isAffected(item) ? Object.values(decisions) : [],
+            }),
           } : { text: document.original };
-          const kind = draft ? 'draft' : 'extract';
+          const kind = summary ? 'summary' : draft ? 'draft' : 'extract';
           const callId = await transaction(pool, period, async db => {
-            const keys = [period, draft ? null : document.id, draft ? groupId : null, kind];
+            const keys = [period, groupCall ? null : document.id, groupCall ? groupId : null, kind];
             const pending = await db.query(`SELECT id FROM w07_ai_call WHERE period=$1
               AND document_id IS NOT DISTINCT FROM $2::bigint AND group_id IS NOT DISTINCT FROM $3::text
               AND kind=$4 AND finished_at IS NULL AND created_at > now() - interval '30 seconds'`, keys);
@@ -214,7 +222,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             await pool.query('UPDATE w07_ai_call SET request=$2,raw=$3,result=$4,finished_at=now() WHERE id=$1',
               [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), output.result]);
           }
-          return redirect(draft ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
+          return redirect(groupCall ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
         }
         if (!document) return send(404, '접수 서류를 찾을 수 없습니다.');
         const error = await transaction(pool, period, async db => {
@@ -343,7 +351,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       content = reviewView(reviews, { escape, table, source, money, link });
     } else if (view === 'ai-log') {
       nextTask = '호출 기록을 열어 요청과 응답을 확인하세요.';
-      content = aiLog(calls, escape);
+      content = aiLog(calls, escape, table, time);
     } else if (view === 'accounting') {
       nextTask = '지급 검토 작업을 선택하세요.';
       content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태 · 모의', '생성 시각 · 모의'],
@@ -428,6 +436,15 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           ' name="action" value="' + value + '">' + label + '</button> ').join('') +
         '</p></form></section>' : '';
       const groupLinks = item.group.links;
+      const summaryCall = calls.filter(call => call.kind === 'summary' && call.group_id === groupId &&
+        call.created_at >= (record?.acted_at ?? new Date(0)) &&
+        call.created_at >= (history.at(-1)?.acted_at ?? new Date(0)) &&
+        !reviews.some(review => review.created_at > call.created_at && review.details.scope.agencies.some(id => ids.has(id)))).at(-1);
+      const aiSummary = '<section class="ai-summary"><h3>AI 근거 요약</h3>' +
+        (summaryCall?.result ? '<p>' + summaryCall.result.sentences.map(escape).join(' ') + '</p>' :
+          summaryCall?.finished_at ? '<p>AI 설명 없음 · 근거 표만 확인</p>' : '') +
+        '<form method="post" data-ai action="' + link({ group: groupId }) +
+        '"><button name="action" value="ai_summary">근거 요약 생성</button></form></section>';
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
       const relatedDocs = documents.filter(row => ids.has(row.agency_id));
@@ -465,7 +482,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
         progress + '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
         '<p class="next-task">' + nextTask + '</p>' +
-        decision + related + followup +
+        decision + aiSummary + related + followup +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
             [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', ')]))

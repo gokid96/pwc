@@ -42,3 +42,13 @@ test('June account change preserves original data and finds earlier paid approva
   assert.equal(individualExceedance(data.rebates, '2026-06'), 0);
   assert.equal(before.requests.filter(row => row.period === '2026-06' && row.exceedsLimit).length, 1);
 });
+
+test('approval summary accepts three or four sentences and logs malformed output', async () => {
+  const input = { agencies: ['D-011'], options: ['승인', '거절', '추가 확인 요청'] };
+  const sentences = ['등록 정보의 일치 항목이 있습니다.', '거래처 관계를 확인할 수 있습니다.', '승인권자가 결정을 선택합니다.'];
+  const valid = await callAssistant('summary', input, { run: async () => ({ sentences }) });
+  assert.deepEqual(valid.result, { sentences });
+  const invalid = await callAssistant('summary', input, { run: async () => ({ sentences: ['한 문장'] }) });
+  assert.equal(invalid.result, null);
+  assert.match(invalid.raw.error, /3~4문장/);
+});
