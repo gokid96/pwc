@@ -39,6 +39,10 @@ test('June account change preserves original data and finds earlier paid approva
   assert.doesNotMatch(sample, /모의/);
   const newAccount = sample.split('신규 정산계좌: ')[1].replace(/\D/g, '');
   assert.ok([...data.agencies, ...data.collections].every(row => row.bank_account_no.replace(/\D/g, '') !== newAccount));
+  const generated = documentSamples(data);
+  assert.ok(generated.mixed[1].includes('기존 정산계좌: ' + agency.bank_account_no));
+  assert.equal(sample.split('신규 정산계좌: ')[1].replace(/\d/g, '#'), agency.bank_account_no.replace(/\d/g, '#'));
+  assert.equal(generated.explanation[1].split('\n').length, 3);
   const updated = applyChanges(data, [{
     kind: 'change', agency_id: 'D-011', details: { afterAccount: '모의은행 999-000-1101' },
   }]);

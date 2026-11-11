@@ -76,7 +76,7 @@ export function aiLog(calls, escape, table, time) {
 }
 
 export function reviewView(records, { escape, table, source, money, link }) {
-  return '<h2>재검토 대상 목록</h2><p>변경 전후 연결 거래처의 이번 달 지급 검토 건과 올해 이전 승인 건을 봅니다.' + originBadge('프로젝트 가정') + '</p>' +
+  return '<h2 id="historical-review">재검토 대상 목록</h2><p>변경 전후 연결 거래처의 이번 달 지급 검토 건과 올해 이전 승인 건을 봅니다.' + originBadge('프로젝트 가정') + '</p>' +
     records.map(record => {
       const scope = record.details.scope;
       const heading = record.kind === 'change' ? '계좌 변경 적용' : '관련자 그룹 확인';

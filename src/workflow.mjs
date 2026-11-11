@@ -135,11 +135,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const denied = () => send(403, entryPage('이 역할에서는 볼 수 없습니다',
       '<p><a href="' + rolePageLink + '">역할 바꾸기</a></p>'));
     const requestedView = query.get('view');
+    const historicalReview = query.get('after') === 'historical-review';
     if (requestedView === 'roles' && request.method === 'POST') {
       const selected = query.get('select');
       if (!/^[0-2]$/.test(selected ?? '') || ['cross-site', 'same-site'].includes(request.headers['sec-fetch-site'])) return denied();
       response.writeHead(303, {
-        Location: '/?' + new URLSearchParams({ ...periodQuery, view: roleViews[Number(selected)][0] }),
+        Location: '/?' + new URLSearchParams({
+          ...periodQuery, view: historicalReview && selected === '0' ? 'review' : roleViews[Number(selected)][0],
+        }) + (historicalReview && selected === '0' ? '#historical-review' : ''),
         'Set-Cookie': 'w07_role=' + selected + '; Path=/; HttpOnly; Secure; SameSite=Lax',
         'Cache-Control': 'no-store',
       }).end();
@@ -149,7 +152,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       if (request.method !== 'GET') return denied();
       return send(200, entryPage('업무 역할 선택', '<div class="role-cards">' +
         roles.map((name, index) => '<form class="summary-card" method="post" action="/?' +
-          escape(new URLSearchParams({ ...periodQuery, view: 'roles', select: index }).toString()) +
+          escape(new URLSearchParams({ ...periodQuery, view: 'roles', select: index,
+            ...(historicalReview ? { after: 'historical-review' } : {}) }).toString()) +
           '"><h2>' + name + '</h2><p>' + roleDescriptions[index] +
           '</p><button class="primary">선택</button></form>').join('') + '</div>'));
     }
@@ -241,6 +245,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (timeoutCheck && !Object.values(documentSamples(data)).some(([, text]) => text === document.original)) {
             return send(400, '기본 모의 서류만 시간 초과를 확인할 수 있습니다.');
           }
+          const sharedDeposits = groupCall ? item.collectionEvidence.filter(entry =>
+            new Set(entry.deposits.map(row => row.agencyId)).size > 1) : [];
+          const agencyAccounts = new Map(applyChanges(data, reviews).agencies.map(row => [row.agency_id, row.bank_account_no]));
+          const differentRegisteredAccounts = sharedDeposits.some(entry => {
+            const accounts = new Set(entry.deposits.map(row => agencyAccounts.get(row.agencyId))
+              .filter(account => account && account !== 'NONE'));
+            return accounts.size > 1;
+          });
           const input = groupCall ? {
             agencies: item.group.members.map(member => member.agencyId),
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
@@ -250,7 +262,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
               approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
               options: !decision && !isAffected(item) ? Object.values(decisions) : [],
               allowedChecks: ['registration', ...(item.group.links.length ? ['relationship'] : []),
-                ...(item.collectionEvidence.length ? ['sharedDeposit'] : [])],
+                ...(item.group.links.some(entry => entry.matchedFields.includes('representative_name')) ? ['sameName'] : []),
+                ...(sharedDeposits.length ? ['sharedDeposit'] : []),
+                ...(differentRegisteredAccounts ? ['differentRegisteredAccounts'] : [])],
             }),
           } : { text: document.original };
           const kind = summary ? 'summary' : draft ? 'draft' : 'extract';
@@ -421,6 +435,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const ids = new Set(item.group.members.map(member => member.agencyId));
       const historical = data.rebates.filter(row => ids.has(row.agency_id) && row.period_ym < period)
         .sort((a, b) => a.period_ym.localeCompare(b.period_ym));
+      const requestRebateIds = new Set(item.rebateRows.map(row => row.rebateId));
+      const periodRecords = data.rebates.filter(row => requestRebateIds.has(row.rebate_id));
+      const paidRecords = periodRecords.filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date));
       const deposits = data.collections.filter(row => ids.has(row.agency_id));
       const fields = { representative_name: '대표자', address: '주소', bank_account_no: '정산계좌' };
       const enabled = open && role === item.approver && !record && !isAffected(item);
@@ -465,11 +482,20 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           ' 일치를 근거로 ' + item.group.members.length + '개 거래처를 한 묶음으로 봅니다.'
           : '단독 거래처로 심사합니다.';
       const retainedReason = retained(item);
-      const amountReason = retainedReason
+      const amountReason = !open ? '묶어서 보면 ' + item.approver + ' 승인 대상입니다.' : retainedReason
         ? '동일 입금계좌 기록으로 영업임원 승인 경로를 유지합니다.'
         : '합계가 200만원' + (item.exceedsLimit ? '을 넘어 ' : ' 이하여서 ') + item.approver + ' 승인 대상입니다.';
+      const recordedApprovers = [...new Set(paidRecords.map(row => row.approver).filter(Boolean))];
+      const historicalReason = paidRecords.length === periodRecords.length && recordedApprovers.length === 1
+        ? '당시 ' + recordedApprovers[0] + (recordedApprovers[0] === '영업지원팀' ? ' 전결' : ' 승인') + '로 지급됐습니다.'
+        : paidRecords.length ? '당시 ' + periodRecords.length + '건 중 ' + paidRecords.length + '건이 지급됐습니다.'
+          : '당시 지급된 기록이 없습니다.';
+      const reviewPeriod = periods.find(month => month > period && isOpenPeriod(data.rebates, month));
       if (!open) {
-        nextTask = '처리된 정산월입니다. 지급 기록을 조회할 수 있습니다.';
+        nextTask = reviewPeriod ? '<a href="' + (role === roles[0]
+          ? link({ period: reviewPeriod, view: 'review' }) + '#historical-review'
+          : '/?' + escape(new URLSearchParams({ period: reviewPeriod, view: 'roles', after: 'historical-review' }).toString())) +
+          '">사후 검토 대상 보기</a>' : '지급 기록을 조회할 수 있습니다.';
       } else if (isAffected(item)) {
         nextTask = role === roles[0]
           ? '정보 변경 재검토에서 승인 경로를 확인하세요. <a href="' + link({ view: 'review' }) + '">바로 가기</a>'
@@ -498,12 +524,10 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         call.created_at >= (history.at(-1)?.acted_at ?? new Date(0)) &&
         !reviews.some(review => review.created_at > call.created_at && review.details.scope.agencies.some(id => ids.has(id)))).at(-1);
       const check = Object.hasOwn(summaryChecks, summaryCall?.result?.check) ? summaryChecks[summaryCall.result.check] : '';
-      const choices = open && !record && !isAffected(item)
-        ? item.approver + '은 ' + Object.values(decisions).join(', ') + ' 중 선택할 수 있습니다.' : '';
       const aiSummary = role !== roles[2] && (open || check) ? '<section class="ai-summary"><h3>AI 근거 요약</h3>' +
-        (check ? '<p>' + [groupReason, amountReason, check, choices].filter(Boolean).map(escape).join(' ') + '</p>' :
+        (check ? '<p>' + escape(check) + '</p>' :
           summaryCall?.finished_at ? '<p>AI 설명 없음 · 근거 표만 확인</p>' : '') +
-        (open ? '<form method="post" data-ai action="' + link({ group: groupId }) +
+        (open ? '<form method="post" data-ai="summary" action="' + link({ group: groupId }) +
           '"><button name="action" value="ai_summary">근거 요약 생성</button></form>' : '') + '</section>' : '';
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
@@ -540,9 +564,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       content = '<h2>요청 ' + escape(groupId) + '</h2><div class="summary-cards detail-cards">' +
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
-        progress + '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
+        progress + '<p class="decision-explanation">' + escape((open ? groupReason : historicalReason) + ' ' + amountReason) + '</p>' +
         '<p class="next-task">' + nextTask + '</p>' +
-        decision + aiSummary + related + followup +
+        (role === roles[1] ? aiSummary + decision : decision + aiSummary) + related + followup +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
             [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', ')]))
@@ -580,7 +604,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       ];
       const priority = entry => role === roles[1] && entry.exceedsLimit && !saved.has(entry.group.groupId) && !isAffected(entry) ? -1 :
         isAffected(entry) || onHold(stateFor(entry)) ? 0 : entry.exceedsLimit ? 1 : 2;
-      const ordered = [...list].sort((left, right) => priority(left) - priority(right));
+      const allRequests = query.get('all') === '1';
+      const ordered = list.filter(entry => role !== roles[1] || allRequests || priority(entry) === -1)
+        .sort((left, right) => priority(left) - priority(right));
+      const listToggle = role === roles[1] ? '<p><a href="' + link(allRequests ? {} : { all: '1' }) + '">' +
+        (allRequests ? '임원 결정 대상만 보기' : '전체 보기') + '</a></p>' : '';
       const selectable = entry => open && role === roles[0] && entry.approver === roles[0] &&
         !entry.exceedsLimit && !isAffected(entry) && !saved.has(entry.group.groupId);
       const bulk = ordered.some(selectable);
@@ -592,7 +620,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ]), { highlight: ordered.map(entry => priority(entry) < 2) });
       content = '<div class="summary-cards">' + cards.map(([label, value]) =>
         '<div class="summary-card"><p>' + label + originBadge('계산') + '</p><strong>' + value + '</strong></div>').join('') +
-        '</div><h2>승인 요청 목록</h2>' + (bulk ? '<form method="post" action="' + link({}) +
+        '</div><h2>승인 요청 목록</h2>' + listToggle + (bulk ? '<form method="post" action="' + link({}) +
           '" onsubmit="return confirm(\'선택한 영업지원팀 전결 건을 승인할까요?\')">' +
           '<button class="primary" name="action" value="bulk_approve">선택 건 승인</button>' + requestTable + '</form>' : requestTable);
     }
@@ -614,6 +642,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
 <form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 <input type="hidden" name="view" value="${escape(view)}">
+${view === 'requests' && query.get('all') === '1' ? '<input type="hidden" name="all" value="1">' : ''}
 <button class="primary">적용</button></form>
 <span>${escape(role)} · <a href="${rolePageLink}">역할 바꾸기</a></span>
 <details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
@@ -629,17 +658,36 @@ for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListe
   button.disabled=true;
   const message=document.createElement('p');
   message.setAttribute('role','status');
-  message.textContent='AI 요청 중 · 직접 입력 가능';
+  message.textContent=form.dataset.ai==='summary'?'요약 중':'AI 요청 중 · 직접 입력 가능';
   form.after(message);
   try {
     const response=await fetch(form.getAttribute('action'),{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
     if(!response.ok) throw Error();
+    if(form.dataset.ai==='summary'){
+      const page=new DOMParser().parseFromString(await response.text(),'text/html');
+      const summary=page.querySelector('.ai-summary');
+      if(!summary) throw Error();
+      const current=form.closest('.ai-summary');
+      const nextButton=summary.querySelector('form[data-ai] button');
+      if(!nextButton) throw Error();
+      current.querySelectorAll(':scope > p').forEach(node=>node.remove());
+      for(const paragraph of summary.querySelectorAll(':scope > p')) form.before(paragraph);
+      message.remove();
+      return;
+    }
     message.replaceChildren();
     const link=document.createElement('a');
     link.href=response.url;
     link.textContent='AI 결과 확인';
     message.append(link);
-  } catch { message.textContent='AI 요청 실패, 직접 입력 또는 작성'; }
+  } catch {
+    if(form.dataset.ai==='summary'){
+      form.closest('.ai-summary').querySelectorAll(':scope > p').forEach(node=>node.remove());
+      const failure=document.createElement('p');
+      failure.textContent='AI 설명 없음 · 근거 표만 확인';
+      form.before(failure);
+    }else{message.textContent='AI 요청 실패, 직접 입력 또는 작성';}
+  }
   finally { button.disabled=false; }
 });
 </script></body></html>`);
