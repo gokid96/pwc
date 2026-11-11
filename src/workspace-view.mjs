@@ -92,6 +92,11 @@ details.evidence{padding:.75rem 1rem;border:1px solid var(--border);border-radiu
 .case-work,.case-intake,.sample-buttons{margin-top:1rem}
 .origin-badge{display:inline-block;margin-inline-start:.4em;padding:.06em .38em;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:.72rem;font-weight:500;white-space:nowrap;vertical-align:middle}
 .toolbar-controls{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+.role-entry{max-width:58rem;margin:6vh auto 0}
+.role-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:1rem;margin-top:1rem}
+.role-cards form{margin:0}
+.role-cards h2{margin-bottom:.45rem}
+.role-cards p{margin-bottom:1rem}
 .settings{position:relative}
 .settings summary{list-style:none;border:1px solid var(--border);border-radius:6px;padding:.45rem .65rem;background:#fff}
 .settings summary::-webkit-details-marker{display:none}
