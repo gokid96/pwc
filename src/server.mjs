@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import pg from 'pg';
+import { createWorkflow } from './workflow.mjs';
 import { calculateW07, loadW07Data } from './w07.mjs';
 
 const env = process.env;
@@ -52,23 +53,18 @@ function readSources(sources) {
   });
 }
 
+async function readStoredData() {
+  const { Body } = await s3.send(new GetObjectCommand(object));
+  return readSources(JSON.parse(await Body.transformToString('utf-8')));
+}
+
+const workflow = createWorkflow(pool, readStoredData, calculateW07);
+
 const server = createServer(async (request, response) => {
   const path = request.url?.split('?')[0];
   try {
-    if (request.method === 'GET' && path === '/') {
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      response.end('<!doctype html><html lang="ko"><meta charset="utf-8"><title>aurora-ops</title><main>aurora-ops 서버 동작 확인</main></html>');
-      return;
-    }
-    if (request.method === 'POST' && path === '/api/check/db') {
-      if (!authorized(request)) return json(response, 401, { error: 'Unauthorized' });
-      await pool.query(`CREATE TABLE IF NOT EXISTS connection_check (
-        id integer PRIMARY KEY, message text NOT NULL, checked_at timestamptz NOT NULL
-      )`);
-      await pool.query(`INSERT INTO connection_check VALUES (1, $1, now())
-        ON CONFLICT (id) DO UPDATE SET message = EXCLUDED.message, checked_at = EXCLUDED.checked_at`, ['PostgreSQL 연결 확인']);
-      const { rows } = await pool.query('SELECT id, message, checked_at FROM connection_check WHERE id = 1');
-      return json(response, 200, rows[0]);
+    if (path === '/' && ['GET', 'POST'].includes(request.method)) {
+      return await workflow(request, response);
     }
     if (request.method === 'PUT' && path === '/api/internal/w07-sources') {
       if (!authorized(request)) return json(response, 401, { error: 'Unauthorized' });
@@ -90,9 +86,7 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { stored: true, ...summary });
     }
     if (request.method === 'GET' && path === '/api/w07/2026-06') {
-      const { Body } = await s3.send(new GetObjectCommand(object));
-      const data = await readSources(JSON.parse(await Body.transformToString('utf-8')));
-      return json(response, 200, summarize(data));
+      return json(response, 200, summarize(await readStoredData()));
     }
     return json(response, 404, { error: 'Not found' });
   } catch (error) {
