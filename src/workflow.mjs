@@ -123,7 +123,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const role = roles[roleIndex];
     const requestedPeriod = query.get('period');
     const periodQuery = /^\d{4}-\d{2}$/.test(requestedPeriod ?? '') ? { period: requestedPeriod } : {};
-    const rolePageLink = '/?' + escape(new URLSearchParams({ ...periodQuery, view: 'roles' }).toString());
+    const rolePageLink = '/';
     const send = (status, content) => {
       response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       response.end(content);
@@ -148,7 +148,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       }).end();
       return;
     }
-    if (!role || requestedView === 'roles') {
+    if (!role || !url.search || requestedView === 'roles') {
       if (request.method !== 'GET') return denied();
       return send(200, entryPage('업무 역할 선택', '<div class="role-cards">' +
         roles.map((name, index) => '<form class="summary-card" method="post" action="/?' +
