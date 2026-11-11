@@ -2,6 +2,7 @@ import { steps, labels, followupState, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, fields, individualExceedance, reviewScope, samples } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
 import { workspaceStyles, statusBadge, originBadge } from './workspace-view.mjs';
+import { approveSupportRequests } from './bulk-approval.mjs';
 
 const roles = ['영업지원팀', '영업임원', '회계'];
 const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인 요청' };
@@ -59,6 +60,14 @@ async function transaction(pool, period, work) {
   }
 }
 
+async function saveDecision(db, period, groupId, role, action, reason) {
+  await db.query(`INSERT INTO w07_decision (period, group_id, role, action, reason)
+    VALUES ($1,$2,$3,$4,$5)`, [period, groupId, role, action, reason]);
+  if (action === 'approve') {
+    await db.query('INSERT INTO w07_accounting_task (period, group_id) VALUES ($1,$2)', [period, groupId]);
+  }
+}
+
 export function createWorkflow(pool, readData, calculate, assistant = callAssistant) {
   let schema;
   function ensureSchema() {
@@ -108,6 +117,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const groupId = query.get('groupPeriod') && query.get('groupPeriod') !== period ? null : query.get('group');
     const view = query.get('view');
     const documentId = query.get('document');
+    const requestedCase = query.get('case');
     const link = extras => '/?' + escape(new URLSearchParams({ period, role, ...extras }).toString());
     const send = (status, content) => {
       response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -139,6 +149,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       retained(entry) || (hasRecord(entry) && !current.some(now => now.group.groupId === entry.group.groupId)))]
       .sort((a, b) => a.group.groupId.localeCompare(b.group.groupId));
     const item = list.find(entry => entry.group.groupId === groupId);
+    const caseContext = requestedCase && list.some(entry => entry.group.groupId === requestedCase)
+      ? { case: requestedCase } : {};
     if (groupId && !item) return send(404, '정산 요청을 찾을 수 없습니다.');
     const document = documents.find(row => row.id === documentId);
     const redirect = extras => {
@@ -168,7 +180,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
               /[\u0000-\u0008\u000e-\u001f]/.test(original)) return send(400, '거래처와 텍스트를 확인해 주세요.');
           const { rows: [saved] } = await transaction(pool, period, db => db.query(
             'INSERT INTO w07_document (period,agency_id,original) VALUES ($1,$2,$3) RETURNING id', [period, agency, original]));
-          return redirect({ view: 'documents', document: saved.id });
+          return redirect({ view: 'documents', document: saved.id, ...caseContext });
         }
         if (['document_extract', 'document_timeout', 'ai_draft'].includes(action)) {
           const draft = action === 'ai_draft';
@@ -202,7 +214,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             await pool.query('UPDATE w07_ai_call SET request=$2,raw=$3,result=$4,finished_at=now() WHERE id=$1',
               [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), output.result]);
           }
-          return redirect(draft ? { group: groupId } : { view: 'documents', document: document.id });
+          return redirect(draft ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
         }
         if (!document) return send(404, '접수 서류를 찾을 수 없습니다.');
         const error = await transaction(pool, period, async db => {
@@ -244,9 +256,10 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (kind === 'change') await db.query('UPDATE w07_document SET applied=true WHERE id=$1', [stored.id]);
         });
         if (error) return send(error, '확인 값과 현재 처리 단계를 다시 확인해 주세요.');
-        return redirect(action === 'document_confirm' ? { view: 'documents', document: document.id } : { view: 'review' });
+        return redirect(action === 'document_confirm'
+          ? { view: 'documents', document: document.id, ...caseContext } : { view: 'review', ...caseContext });
       }
-      if (!item && action !== 'reset') return send(400, '잘못된 요청입니다.');
+      if (!item && !['reset', 'bulk_approve'].includes(action)) return send(400, '잘못된 요청입니다.');
       const error = await transaction(pool, period, async db => {
         if (action === 'reset') {
           await db.query('DELETE FROM w07_ai_call WHERE period = $1', [period]);
@@ -257,6 +270,15 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           return;
         }
         const { rows: currentReviews } = await db.query('SELECT details FROM w07_review WHERE period=$1', [period]);
+        if (action === 'bulk_approve') {
+          const { rows: currentDecisions } = await db.query('SELECT group_id FROM w07_decision WHERE period=$1', [period]);
+          return approveSupportRequests({
+            role, ids: form.getAll('request'), requests: originalList,
+            savedIds: new Set(currentDecisions.map(row => row.group_id)),
+            affected: new Set(currentReviews.flatMap(review => review.details.scope.agencies)),
+            approve: id => saveDecision(db, period, id, role, 'approve', ''),
+          });
+        }
         if (currentReviews.some(review => review.details.scope.agencies.some(id =>
           item.group.members.some(member => member.agencyId === id)))) return 409;
         const ids = [period, groupId];
@@ -269,11 +291,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (role !== item.approver) return 403;
           if (reason.length > 1000 || (action !== 'approve' && !reason)) return 400;
           if (record) return 409;
-          await db.query(`INSERT INTO w07_decision (period, group_id, role, action, reason)
-            VALUES ($1,$2,$3,$4,$5)`, [...ids, role, action, reason]);
-          if (action === 'approve') {
-            await db.query('INSERT INTO w07_accounting_task (period, group_id) VALUES ($1,$2)', ids);
-          }
+          await saveDecision(db, period, groupId, role, action, reason);
           return;
         }
         const state = followupState(record, latest?.action, item.exceedsLimit);
@@ -318,7 +336,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     let nextTask = '승인 요청을 선택하세요.';
     if (view === 'documents') {
       nextTask = '대리점 서류를 접수하거나 접수 목록을 확인하세요.';
-      content = documentView({ data, documents, calls, selectedId: documentId, link, escape, table, role });
+      content = documentView({ data, documents, calls, selectedId: documentId, selectedAgency: query.get('agency'),
+        link: extras => link({ ...extras, ...caseContext }), escape, table, role });
     } else if (view === 'review') {
       nextTask = '변경된 승인 경로와 재검토 대상을 확인하세요.';
       content = reviewView(reviews, { escape, table, source, money, link });
@@ -328,7 +347,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     } else if (view === 'accounting') {
       nextTask = '지급 검토 작업을 선택하세요.';
       content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태 · 모의', '생성 시각 · 모의'],
-        list.filter(entry => saved.get(entry.group.groupId)?.created_at).map(entry => [
+        list.filter(entry => (!groupId || entry.group.groupId === groupId) && saved.get(entry.group.groupId)?.created_at).map(entry => [
           groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
     } else if (view === 'followup') {
@@ -411,12 +430,42 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const groupLinks = item.group.links;
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
+      const relatedDocs = documents.filter(row => ids.has(row.agency_id));
+      const relatedReviews = reviews.filter(row => row.details.scope.agencies.some(id => ids.has(id)));
+      const hasClarification = onHold(state) || history.some(row => ['send', 'reply', 'resend', 'verify', 'resubmit'].includes(row.action));
+      const stages = [
+        ['상신', true], ['임원 결정', item.exceedsLimit], ['소명', hasClarification],
+        ['서류 확인', relatedDocs.length > 0], ['재검토', relatedReviews.length > 0],
+        ['회계 지급 검토', Boolean(record?.created_at)],
+      ];
+      const active = relatedReviews.length ? 4 : relatedDocs.some(row => !row.confirmed) ? 3 :
+        record?.created_at ? 5 : onHold(state) ? 2 : item.exceedsLimit ? 1 : 0;
+      const progress = '<ol class="request-progress" aria-label="처리 단계">' + stages.map(([label, applicable], index) =>
+        '<li' + (active === index ? ' aria-current="step"' : applicable ? '' : ' class="not-applicable"') + '>' + label + '</li>').join('') + '</ol>';
+      const intake = '<form class="case-intake" method="get"><input type="hidden" name="period" value="' + escape(period) +
+        '"><input type="hidden" name="role" value="영업지원팀"><input type="hidden" name="view" value="documents">' +
+        '<input type="hidden" name="case" value="' + escape(groupId) + '">' +
+        '<label>거래처 <select name="agency">' + options([...ids], groupId) +
+        '</select></label> <button>서류 접수</button></form>';
+      const related = '<section class="case-work"><h3>연결 작업</h3>' +
+        table(['작업', '현황'], [
+          ['소명 요청', hasClarification ? '<a href="' + link({ group: groupId, role: '영업지원팀' }) +
+            (actions.length ? '#followup' : '#history') + '">' + (onHold(state) ? labels[state] : '소명 기록') + '</a>' : '아직 없습니다'],
+          ['접수 서류', relatedDocs.length ? relatedDocs.map(row => '<a href="' +
+            link({ view: 'documents', document: row.id, agency: row.agency_id, case: groupId }) + '">' +
+            escape(row.agency_id) + ' · 접수 ' + escape(row.id) + '</a>').join('<br>') : '아직 없습니다'],
+          ['정보 변경', relatedReviews.length ? relatedReviews.map(row => '<a href="' +
+            link({ view: 'review', case: groupId }) + '#review-' + escape(row.id) + '">' +
+            escape(row.agency_id) + ' · ' + (row.kind === 'change' ? '계좌 변경' : '그룹 확인') + '</a>').join('<br>') : '아직 없습니다'],
+          ['회계 작업', record?.created_at ? '<a href="' + link({ view: 'accounting', group: groupId, role: '회계' }) +
+            '">' + statusFor(item) + '</a>' : '아직 없습니다'],
+        ]) + intake + '</section>';
       content = '<h2>요청 ' + escape(groupId) + '</h2><div class="summary-cards detail-cards">' +
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
-        '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
+        progress + '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
         '<p class="next-task">' + nextTask + '</p>' +
-        decision + followup +
+        decision + related + followup +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
             [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', ')]))
@@ -439,7 +488,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             entry.deposits.map(row => escape(row.agencyId) + ' · ' + escape(row.depositDate)).join('<br>'),
             entry.registered.map(row => escape(row.agencyId)).join('<br>'),
           ])), collectionRefs, true) +
-        '<h3>처리 이력</h3>' +
+        '<h3 id="history">처리 이력</h3>' +
         table(['시각', '업무 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
           (steps[event.action]?.[3].replace('모의 ', '') ?? decisions[event.action] ?? '회계 지급 검토 작업 생성') +
@@ -452,12 +501,22 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ['200만원 초과 건', '거래처별로 보면 ' + individualExceedance(data.rebates, period) +
           '건 → 묶어서 보면 ' + current.filter(entry => entry.exceedsLimit).length + '건'],
       ];
+      const priority = entry => isAffected(entry) || onHold(stateFor(entry)) ? 0 : entry.exceedsLimit ? 1 : 2;
+      const ordered = [...list].sort((left, right) => priority(left) - priority(right));
+      const selectable = entry => role === roles[0] && entry.approver === roles[0] &&
+        !entry.exceedsLimit && !isAffected(entry) && !saved.has(entry.group.groupId);
+      const bulk = ordered.some(selectable);
+      const requestTable = table([...(bulk ? ['선택'] : []), '요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태'],
+        ordered.map(entry => [
+          ...(bulk ? [selectable(entry) ? '<input type="checkbox" name="request" value="' + escape(entry.group.groupId) +
+            '" aria-label="' + escape(entry.group.groupId) + ' 선택">' : ''] : []),
+          groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver), statusBadge(statusFor(entry)),
+        ]), { highlight: ordered.map(entry => priority(entry) < 2) });
       content = '<div class="summary-cards">' + cards.map(([label, value]) =>
         '<div class="summary-card"><p>' + label + originBadge('계산') + '</p><strong>' + value + '</strong></div>').join('') +
-        '</div><h2>승인 요청 목록</h2>' +
-        table(['요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태 · 모의'],
-          list.map(entry => [groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver),
-            statusBadge(statusFor(entry))]), { highlight: list.map(entry => entry.approver === '영업임원') });
+        '</div><h2>승인 요청 목록</h2>' + (bulk ? '<form method="post" action="' + link({}) +
+          '" onsubmit="return confirm(\'선택한 영업지원팀 전결 건을 승인할까요?\')">' +
+          '<button class="primary" name="action" value="bulk_approve">선택 건 승인</button>' + requestTable + '</form>' : requestTable);
     }
 
     const navigation = {
@@ -482,9 +541,9 @@ ${['accounting', 'followup', 'documents', 'review', 'ai-log'].includes(view) ? '
 <details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></div></details></div></header>
-<div class="content">${detailView ? '' : '<p class="next-task">' + nextTask + '</p>'}${content}</div>
-<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값 · 모의는 시연용 서류와 외부 처리 · 프로젝트 가정은 시연에서 적용한 기준</p>
-<p>가상 기업 Aurora 그룹 데이터 기반 시연 / 외부 발송과 지급은 모의 처리</p></footer>
+<div class="content">${detailView ? '' : '<p class="next-task">' + nextTask + '</p>'}${caseContext.case ? '<p><a href="' +
+  link({ group: caseContext.case }) + '">요청 ' + escape(caseContext.case) + ' 상세로 돌아가기</a></p>' : ''}${content}</div>
+<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값</p></footer>
 </main></div><script>
 for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListener('submit',async event=>{
   event.preventDefault();

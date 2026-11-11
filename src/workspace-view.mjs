@@ -82,9 +82,14 @@ tbody tr:hover{background:#fafbfd}
 details.evidence{padding:.75rem 1rem;border:1px solid var(--border);border-radius:7px}
 .evidence>summary{font-weight:650}
 .locations{margin:.65rem 0;color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}
-.executive-row td{background:#f1f5ff}
-.executive-row td:first-child{box-shadow:inset 3px 0 var(--accent)}
-.executive-row td:nth-child(4){color:var(--accent);font-weight:700}
+.executive-row td{background:#e8efff;font-weight:650}
+.executive-row td:first-child{box-shadow:inset 5px 0 var(--accent)}
+.request-progress{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;padding:0;margin:0 0 1rem;list-style:none;font-size:.87rem}
+.request-progress li{color:var(--muted)}
+.request-progress li+li::before{content:"→";margin-right:.45rem;color:var(--muted)}
+.request-progress li[aria-current]{color:var(--accent);font-weight:750}
+.request-progress .not-applicable{opacity:.55}
+.case-work,.case-intake,.sample-buttons{margin-top:1rem}
 .origin-badge{display:inline-block;margin-inline-start:.4em;padding:.06em .38em;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:.72rem;font-weight:500;white-space:nowrap;vertical-align:middle}
 .toolbar-controls{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
 .settings{position:relative}

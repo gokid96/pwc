@@ -1,7 +1,7 @@
 import { fields, samples } from './condition.mjs';
 import { originBadge } from './workspace-view.mjs';
 
-export function documentView({ data, documents, calls, selectedId, link, escape, table, role }) {
+export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role }) {
   const canEdit = role === '영업지원팀';
   const selected = documents.find(row => row.id === selectedId);
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
@@ -10,15 +10,16 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
   let html = '<h2>서류 접수 목록</h2>' +
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' + disabled +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
-    data.agencies.map(row => '<option>' + escape(row.agency_id) + '</option>').join('') +
-    '</select></label> <label>서류 <select name="sample" id="sample"><option value="">직접 입력</option>' +
-    Object.entries(samples).map(([id, [name]]) => '<option value="' + id + '">' + name + ' · 모의</option>').join('') +
+    data.agencies.map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
+      '>' + escape(row.agency_id) + '</option>').join('') +
     '</select></label> <label>.txt <input type="file" id="text-file" accept=".txt,text/plain"></label>' +
+    '<div class="sample-buttons">' + Object.entries(samples).map(([id, [name]]) =>
+      '<button type="button" data-sample="' + id + '">' + name + ' · 추가 자료</button>').join(' ') + '</div>' +
     '<p><label>서류 내용 ' + originBadge('모의') + ' <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
     post('document_add', '접수') + '</fieldset></form>' +
     '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))) +
-    ';const sample=document.getElementById("sample");const original=document.getElementById("document-text");' +
-    'sample.onchange=()=>{original.value=sampleText[sample.value]||"";if(sample.value)sample.form.elements.agency.value=sample.value==="explanation"?"D-024":"D-011";};' +
+    ';const original=document.getElementById("document-text");' +
+    'for(const button of document.querySelectorAll("[data-sample]"))button.onclick=()=>{const sample=button.dataset.sample;original.value=sampleText[sample];button.form.elements.agency.value=sample==="explanation"?"D-024":"D-011";};' +
     'document.getElementById("text-file").onchange=async(e)=>{const f=e.target.files[0];if(f&&/\\.txt$/i.test(f.name)&&f.size<=24000)original.value=(await f.text()).slice(0,6000);};</script>' +
     table(['접수 번호', '거래처', '상태'], documents.map(row => [
       '<a href="' + link({ view: 'documents', document: row.id }) + '">' + escape(row.id) + '</a>',
@@ -77,7 +78,7 @@ export function reviewView(records, { escape, table, source, money, link }) {
       const requests = (items, title) => '<h4>' + title + '</h4>' +
         table(['거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '원본 행'], items.map(item =>
           [item.members.map(escape).join(', '), money(item.amount), escape(item.approver), item.sources.map(source).join('<br>')]));
-      return '<section><h3>' + heading + ' · ' + escape(record.agency_id) + '</h3><p>대상 ' +
+      return '<section id="review-' + escape(record.id) + '"><h3>' + heading + ' · ' + escape(record.agency_id) + '</h3><p>대상 ' +
         scope.agencies.map(escape).join(', ') + ' · 정산월 ' + escape(record.period) + '</p>' +
         requests(scope.before, '변경 전 등록 정보') + requests(scope.after, '변경 후 등록 정보') +
         (scope.retained.length ? '<p><strong>실제 승인 경로 · 기존 임원 경로 유지 · 소명 대기</strong></p><p>동일 입금계좌 기록 ' +
