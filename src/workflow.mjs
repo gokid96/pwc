@@ -15,6 +15,7 @@ const time = value => new Intl.DateTimeFormat('ko-KR', {
 const mask = account => '•••• ' + escape(account.slice(-4));
 
 function table(headers, rows, { origins = [], highlight = [] } = {}) {
+  if (!rows.length) return '<p class="empty-state">아직 없습니다</p>';
   const columnClass = headers.map(header => /^(합계|금액|장려금)(?:\s|$)/.test(header) ? ' class="amount"' : '');
   const origin = headers.map((header, index) => origins[index] ??
     (header.endsWith(' · 원본') || header === '원본 행' || header === '원본 상태' ? '원본' :
@@ -288,7 +289,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       });
       if (error) return send(error, {
         400: '필요한 내용이나 사유를 1~1,000자로 입력해 주세요.',
-        403: '현재 시연 역할에 해당 작업 권한이 없습니다.',
+        403: '현재 업무 역할에 해당 작업 권한이 없습니다.',
         409: '화면을 새로 열어 현재 처리 단계를 확인해 주세요.',
       }[error]);
       const next = new URLSearchParams({ period, role, ...(item && action !== 'reset' ? { group: groupId } : {}) });
@@ -313,21 +314,29 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const groupLink = entry => '<a href="' + link({ group: entry.group.groupId }) + '">' +
       escape(entry.group.groupId) + '</a>';
     let content;
+    let detailView = false;
+    let nextTask = '승인 요청을 선택하세요.';
     if (view === 'documents') {
+      nextTask = '대리점 서류를 접수하거나 접수 목록을 확인하세요.';
       content = documentView({ data, documents, calls, selectedId: documentId, link, escape, table, role });
     } else if (view === 'review') {
+      nextTask = '변경된 승인 경로와 재검토 대상을 확인하세요.';
       content = reviewView(reviews, { escape, table, source, money, link });
     } else if (view === 'ai-log') {
+      nextTask = '호출 기록을 열어 요청과 응답을 확인하세요.';
       content = aiLog(calls, escape);
     } else if (view === 'accounting') {
+      nextTask = '지급 검토 작업을 선택하세요.';
       content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태 · 모의', '생성 시각 · 모의'],
         list.filter(entry => saved.get(entry.group.groupId)?.created_at).map(entry => [
           groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
     } else if (view === 'followup') {
+      nextTask = '소명할 요청을 선택하세요.';
       content = '<h2>소명 요청 작업</h2>' + table(['요청 · 계산', '거래처 · 원본', '상태 · 모의'],
         list.filter(entry => onHold(stateFor(entry))).map(entry => [groupLink(entry), members(entry), statusBadge(statusFor(entry))]));
     } else if (item) {
+      detailView = true;
       const record = saved.get(groupId);
       const ids = new Set(item.group.members.map(member => member.agencyId));
       const historical = data.rebates.filter(row => ids.has(row.agency_id) && row.period_ym < period)
@@ -349,7 +358,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           escape(draft.result.draft) + '</textarea></label></p>' : '') +
         '<form method="post" data-ai action="' + link({ group: groupId }) +
         '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form>' : '';
-      const followup = actions.length ? '<h3>후속 작업</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
+      const followup = actions.length ? '<h3 id="followup">후속 작업</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset' + (role === actions[0][1][2] && !isAffected(item) ? '' : ' disabled') + '><legend>' + labels[state] +
         '</legend>' + (state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
           escape(state === 'draft' && canDraft ? draft?.result?.draft : '') + '</textarea></label> ') +
@@ -366,25 +375,39 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ['현재 상태', statusBadge(statusFor(item))],
       ];
       const matching = [...new Set(item.group.links.flatMap(entry => entry.matchedFields))];
-      const groupReason = matching.length
-        ? item.group.members.length + '개 거래처가 거래처 쌍별 ' +
-          matching.map(field => fields[field]).join('·') + ' 일치를 근거로 한 묶음입니다.'
-        : '단독 거래처로 심사합니다.';
+      const sameRepresentative = item.group.links.length > 0 &&
+        item.group.links.every(entry => entry.matchedFields.includes('representative_name'));
+      const groupReason = sameRepresentative && item.group.members.length === 3 &&
+        matching.includes('address') && matching.includes('bank_account_no')
+        ? '대표자가 같고 주소 또는 정산계좌가 일치해 세 거래처를 한 묶음으로 봅니다.'
+        : matching.length ? matching.map(field => fields[field]).join('·') +
+          ' 일치를 근거로 ' + item.group.members.length + '개 거래처를 한 묶음으로 봅니다.'
+          : '단독 거래처로 심사합니다.';
       const retainedReason = retained(item);
       const amountReason = retainedReason
-        ? '등록 정보가 바뀌었지만 동일 입금계좌 근거가 남아 기존 영업임원 승인 경로를 유지합니다.'
+        ? '동일 입금계좌 기록으로 영업임원 승인 경로를 유지합니다.'
         : '합계가 200만원' + (item.exceedsLimit ? '을 넘어 ' : ' 이하여서 ') + item.approver + ' 승인 대상입니다.';
-      const decisionNotice = isAffected(item) ? '이 건은 정보 변경 재검토 중입니다.'
-        : role !== item.approver ? '이 건은 ' + item.approver + '만 결정할 수 있습니다.'
-          : record ? '이 건의 결정이 이미 기록되었습니다. 다음 단계는 후속 작업에서 확인할 수 있습니다.' : '';
-      const decision = '<section class="decision-panel"><h3>결정</h3>' +
-        (decisionNotice ? '<p class="decision-notice">' + escape(decisionNotice) + '</p>' : '') +
+      if (isAffected(item)) {
+        nextTask = '정보 변경 재검토에서 승인 경로를 확인하세요. <a href="' + link({ view: 'review' }) + '">바로 가기</a>';
+      } else if (record?.action === 'approve') {
+        nextTask = '회계 작업에서 지급 검토를 확인하세요. <a href="' + link({ view: 'accounting', role: '회계' }) + '">바로 가기</a>';
+      } else if (onHold(state)) {
+        const task = { draft: '소명 요청을 작성하세요', waiting: '대리점 답변을 등록하세요',
+          received: '대리점 답변을 검토하세요', verified: '임원에게 재상신하세요' }[state];
+        nextTask = '영업지원팀 역할로 ' + task + '. <a href="' +
+          link({ group: groupId, role: '영업지원팀' }) + '#followup">바로 가기</a>';
+      } else if (!record && role !== item.approver) {
+        nextTask = escape(item.approver) + ' 승인 대상입니다. <a class="role-switch" href="' +
+          link({ group: groupId, role: item.approver }) + '">' + escape(item.approver) + '으로 전환</a>';
+      } else {
+        nextTask = enabled ? '승인 여부를 결정하세요.' : '기록된 결정을 확인하세요.';
+      }
+      const decision = enabled ? '<section class="decision-panel"><h3>결정</h3>' +
         '<form method="post" action="' + link({ group: groupId }) +
-        '">' + revision + '<fieldset' + (enabled ? '' : ' disabled') +
-        '><legend>시연 역할 ' + escape(role) + '</legend><label>사유 <textarea name="reason" maxlength="1000"></textarea></label>' +
-        '<p>거절과 추가 확인 요청은 사유 필수</p>' +
-        Object.entries(decisions).map(([value, label]) => '<button name="action" value="' + value + '">' + label + '</button> ').join('') +
-        '</fieldset></form></section>';
+        '">' + revision + '<label>사유 (거절·추가 확인 시 필수) <textarea name="reason" maxlength="1000"></textarea></label><p>' +
+        Object.entries(decisions).map(([value, label]) => '<button' + (value === 'approve' ? ' class="primary"' : '') +
+          ' name="action" value="' + value + '">' + label + '</button> ').join('') +
+        '</p></form></section>' : '';
       const groupLinks = item.group.links;
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
@@ -392,7 +415,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
         '<p class="decision-explanation">' + escape(groupReason + ' ' + amountReason) + '</p>' +
-        (isAffected(item) ? '<p><a href="' + link({ view: 'review' }) + '">변경 전후와 실제 승인 경로 확인</a></p>' : '') +
+        '<p class="next-task"><strong>다음 할 일</strong> ' + nextTask + '</p>' +
         decision + followup +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
@@ -417,7 +440,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             entry.registered.map(row => escape(row.agencyId)).join('<br>'),
           ])), collectionRefs, true) +
         '<h3>처리 이력</h3>' +
-        table(['시각', '시연 역할', '행동', '내용·사유'], timeline.map(event => [
+        table(['시각', '업무 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
           (steps[event.action]?.[3].replace('모의 ', '') ?? decisions[event.action] ?? '회계 지급 검토 작업 생성') +
             (['send', 'resend', 'reply'].includes(event.action) ? originBadge('모의') : ''), escape(event.reason),
@@ -438,27 +461,28 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     }
 
     const navigation = {
-      requests: '승인 요청', followup: '소명 요청', accounting: '회계 작업',
-      documents: '대리점 서류 접수', review: '정보 변경 재검토', 'ai-log': 'AI 호출 기록',
+      requests: '승인 요청', followup: '소명 요청', documents: '대리점 서류 접수',
+      review: '정보 변경 재검토', accounting: '회계 작업',
     };
     const activeView = Object.hasOwn(navigation, view) ? view : 'requests';
+    const pageTitle = view === 'ai-log' ? 'AI 호출 기록' : navigation[activeView];
     const menu = Object.entries(navigation).map(([key, label]) =>
       '<a href="' + link(key === 'requests' ? {} : { view: key }) + '"' +
-      (key === activeView ? ' aria-current="page"' : '') + '>' + label + '</a>').join('');
+      (key === activeView && view !== 'ai-log' ? ' aria-current="page"' : '') + '>' + label + '</a>').join('');
     send(200, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${navigation[activeView]} | 판매장려금 지급 검토</title><style>${workspaceStyles}</style></head><body>
+<title>${pageTitle} | 판매장려금 지급 검토</title><style>${workspaceStyles}</style></head><body>
 <div class="workspace">
 <aside class="sidebar"><p class="brand">판매장려금 지급 검토</p><nav aria-label="업무 메뉴">${menu}</nav></aside>
-<main><header class="toolbar"><h1>${navigation[activeView]}</h1><div class="toolbar-controls">
+<main><header class="toolbar"><h1>${pageTitle}</h1><div class="toolbar-controls">
 <form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
-<label>시연 역할 <select name="role">${options(roles, role)}</select></label>
+<label>업무 역할 <select name="role">${options(roles, role)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 ${['accounting', 'followup', 'documents', 'review', 'ai-log'].includes(view) ? '<input type="hidden" name="view" value="' + escape(view) + '">' : ''}
 <button class="primary">적용</button></form>
-<details class="settings"><summary>설정</summary><div class="settings-panel"><p>${escape(period)}의 공유 결정·소명·서류·변경·AI 이력·회계 작업을 초기화합니다.</p>
+<details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></div></details></div></header>
-<div class="content">${content}</div>
+<div class="content">${detailView ? '' : '<p class="next-task"><strong>다음 할 일</strong> ' + nextTask + '</p>'}${content}</div>
 <footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값 · 모의는 시연용 서류와 외부 처리 · 프로젝트 가정은 시연에서 적용한 기준</p>
 <p>가상 기업 Aurora 그룹 데이터 기반 시연 / 외부 발송과 지급은 모의 처리</p></footer>
 </main></div><script>

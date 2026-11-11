@@ -74,7 +74,10 @@ tbody tr:hover{background:#fafbfd}
 .decision-panel{padding:1rem;border:1px solid var(--border);border-radius:8px;background:#f7f9fc}
 .decision-panel h3{margin:0 0 .5rem}
 .decision-panel form{margin-bottom:0}
-.decision-notice{color:var(--muted);margin:.25rem 0}
+.next-task{margin:0 0 1rem;padding:.7rem .9rem;border-radius:6px;background:#f0f4fb}
+.next-task strong{margin-inline-end:.55rem}
+.role-switch{display:inline-block;padding:.15rem .5rem;border:1px solid var(--border);border-radius:5px;background:#fff;text-decoration:none}
+.empty-state{color:var(--muted);margin:.75rem 0}
 .content .evidence{margin-top:1rem}
 details.evidence{padding:.75rem 1rem;border:1px solid var(--border);border-radius:7px}
 .evidence>summary{font-weight:650}

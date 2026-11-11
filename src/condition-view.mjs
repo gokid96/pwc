@@ -7,7 +7,7 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
   const post = (name, label) => '<button name="action" value="' + name + '">' + label + '</button>';
   const disabled = canEdit ? '' : ' disabled';
-  let html = '<h2>서류 접수 목록</h2><p>시연용 텍스트를 사용하세요.</p>' +
+  let html = '<h2>서류 접수 목록</h2>' +
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' + disabled +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
     data.agencies.map(row => '<option>' + escape(row.agency_id) + '</option>').join('') +
@@ -70,7 +70,7 @@ export function aiLog(calls, escape) {
 }
 
 export function reviewView(records, { escape, table, source, money, link }) {
-  return '<h2>재검토 대상 목록</h2><p>변경 전후 연결된 거래처를 대상으로 선택한 월의 지급 검토 건과 같은 해 이전 정산월의 승인 건을 포함합니다. 자료에 지급일이 있으면 사후 검토 대상으로 표시합니다.' + originBadge('프로젝트 가정') + '</p>' +
+  return '<h2>재검토 대상 목록</h2><p>변경 전후 연결 거래처의 이번 달 지급 검토 건과 올해 이전 승인 건을 봅니다.' + originBadge('프로젝트 가정') + '</p>' +
     records.map(record => {
       const scope = record.details.scope;
       const heading = record.kind === 'change' ? '계좌 변경 적용' : '관련자 그룹 확인';
