@@ -1,7 +1,7 @@
 import { steps, labels, followupState, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, fields, individualExceedance, reviewScope, samples } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
-import { workspaceStyles, statusBadge } from './workspace-view.mjs';
+import { workspaceStyles, statusBadge, originBadge } from './workspace-view.mjs';
 
 const roles = ['영업지원팀', '영업임원', '회계'];
 const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인 요청' };
@@ -14,12 +14,16 @@ const time = value => new Intl.DateTimeFormat('ko-KR', {
 }).format(value);
 const mask = account => '•••• ' + escape(account.slice(-4));
 
-function table(headers, rows) {
+function table(headers, rows, { origins = [], highlight = [] } = {}) {
   const columnClass = headers.map(header => /^(합계|금액|장려금)(?:\s|$)/.test(header) ? ' class="amount"' : '');
+  const origin = headers.map((header, index) => origins[index] ??
+    (header.endsWith(' · 원본') || header === '원본 행' || header === '원본 상태' ? '원본' :
+      header.endsWith(' · 계산') ? '계산' : ''));
+  const title = header => header.replace(/ · (원본|계산|모의)$/, '').replace(/^원본 행$/, '자료 위치').replace(/^원본 상태$/, '지급 상태');
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
-    headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + header + '</th>').join('') +
-    '</tr></thead><tbody>' + rows.map(row => '<tr>' + row.map((cell, index) =>
-      '<td' + columnClass[index] + '>' + cell + '</td>').join('') +
+    headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + title(header) + '</th>').join('') +
+    '</tr></thead><tbody>' + rows.map((row, rowIndex) => (highlight[rowIndex] ? '<tr class="executive-row">' : '<tr>') + row.map((cell, index) =>
+      '<td' + columnClass[index] + '>' + cell + (origin[index] && cell ? originBadge(origin[index]) : '') + '</td>').join('') +
     '</tr>').join('') + '</tbody></table></div>';
 }
 
@@ -330,56 +334,63 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           escape(draft.result.draft) + '</textarea></label></p>' : '') +
         '<form method="post" data-ai action="' + link({ group: groupId }) +
         '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form>' : '';
-      const followup = actions.length ? '<h3>후속 작업 · 모의</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
+      const followup = actions.length ? '<h3>후속 작업</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset' + (role === actions[0][1][2] && !isAffected(item) ? '' : ' disabled') + '><legend>' + labels[state] +
         '</legend>' + (state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
           escape(state === 'draft' && canDraft ? draft?.result?.draft : '') + '</textarea></label> ') +
-        actions.map(([action, step]) => '<button name="action" value="' + action + '">' + step[3] + '</button> ').join('') +
+        actions.map(([action, step]) => '<button name="action" value="' + action + '">' + step[3].replace('모의 ', '') +
+          (['send', 'resend', 'reply'].includes(action) ? originBadge('모의') : '') + '</button> ').join('') +
         '</fieldset></form>' : '';
       const timeline = [...history, ...(record ? [record] : []),
         ...(record?.created_at ? [{ acted_at: record.created_at, role: '시스템', action: 'accounting',
           reason: '승인 결과 반영' }] : [])].sort((a, b) => a.acted_at - b.acted_at);
-      content = '<h2>요청 ' + escape(groupId) + '</h2><p>구성 거래처 · 원본 ' + members(item) +
-        ' | 합계 · 계산 ' + money(item.totalKrw) + ' | 승인권자 · 계산 ' + escape(item.approver) +
-        ' | 상태 · 모의 ' + statusFor(item) + '</p>' +
+      content = '<h2>요청 ' + escape(groupId) + '</h2><p>구성 거래처 ' + members(item) + originBadge('원본') +
+        ' | 합계 ' + money(item.totalKrw) + originBadge('계산') + ' | 승인권자 ' + escape(item.approver) + originBadge('계산') +
+        ' | 상태 ' + statusFor(item) + '</p>' +
         (isAffected(item) ? '<p><a href="' + link({ view: 'review' }) + '">변경 전후와 실제 승인 경로 확인</a></p>' : '') +
-        '<h3>관련 거래처 근거 · 계산</h3>' +
-        (item.group.links.length ? table(['거래처', '일치 항목', '원본 행'], item.group.links.map(entry =>
+        '<h3>관련 거래처 근거</h3>' +
+        (item.group.links.length ? table(['거래처', '일치 항목 · 계산', '원본 행'], item.group.links.map(entry =>
           [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', '),
             entry.sources.map(source).join('<br>')])) : '<p>단독 거래처</p>') +
-        '<h3>거래처별 장려금 · 원본</h3>' + table(['거래처', '금액', '원본 행'],
+        '<h3>거래처별 장려금</h3>' + table(['거래처 · 원본', '금액 · 원본', '원본 행'],
           item.rebateRows.map(row => [escape(row.agencyId), money(row.amountKrw), source(row.source)])) +
-        '<h3>이전 정산월 지급 기록 · 원본</h3><p>현재 그룹 구성원 기준</p>' +
-        table(['정산월', '거래처', '금액', '원본 상태', '승인자', '지급일', '원본 행'], historical.map(row =>
+        '<h3>이전 정산월 지급 기록</h3><p>현재 그룹 구성원 기준</p>' +
+        table(['정산월 · 원본', '거래처 · 원본', '금액 · 원본', '원본 상태', '승인자 · 원본', '지급일 · 원본', '원본 행'], historical.map(row =>
           [row.period_ym, row.agency_id, money(Number(row.rebate_amount_krw)), row.approval_status,
             row.approver, row.payment_date].map(escape).concat(source(row.source)))) +
-        '<h3>입금 기록 · 원본</h3>' +
-        table(['거래처', '입금일', '입금계좌', '원본 행'], deposits.map(row =>
+        '<h3>입금 기록</h3>' +
+        table(['거래처 · 원본', '입금일 · 원본', '입금계좌 · 원본', '원본 행'], deposits.map(row =>
           [escape(row.agency_id), escape(row.deposit_date), mask(row.bank_account_no), source(row.source)])) +
-        '<h3>입금계좌 대조 · 원본과 계산</h3><p>회수 기록과 정산계좌 일치 근거 · 계좌 끝자리만 표시</p>' +
+        '<h3>입금계좌 대조</h3><p>회수 기록과 정산계좌 일치 근거 · 계좌 끝자리만 표시</p>' +
         table(['입금계좌 · 원본', '회수 기록 · 원본', '정산계좌 일치 · 계산'], item.collectionEvidence.map(entry => [
           mask(entry.account),
           entry.deposits.map(row => [escape(row.agencyId), escape(row.depositDate), source(row.source)].join(' · ')).join('<br>'),
           entry.registered.map(row => escape(row.agencyId) + ' · ' + source(row.source)).join('<br>'),
         ])) +
-        '<h3>결정 · 모의 입력</h3><form method="post" action="' + link({ group: groupId }) +
+        '<h3>결정</h3><form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset' + (enabled ? '' : ' disabled') +
         '><legend>시연 역할 ' + escape(role) + '</legend><label>사유 <textarea name="reason" maxlength="1000"></textarea></label>' +
         '<p>거절과 추가 확인 요청은 사유 필수</p>' +
         Object.entries(decisions).map(([value, label]) => '<button name="action" value="' + value + '">' + label + '</button> ').join('') +
-        '</fieldset></form>' + followup + '<h3>처리 이력 · 모의</h3>' +
+        '</fieldset></form>' + followup + '<h3>처리 이력</h3>' +
         table(['시각', '시연 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
-          steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 생성', escape(event.reason),
+          (steps[event.action]?.[3].replace('모의 ', '') ?? decisions[event.action] ?? '회계 지급 검토 작업 생성') +
+            (['send', 'resend', 'reply'].includes(event.action) ? originBadge('모의') : ''), escape(event.reason),
         ]));
     } else {
-      content = '<h2>승인 요청 <small>' + list.length + '건</small></h2>' +
-        table(['거래처별 월 합산 · 200만원 초과', '관련자 그룹별 월 합산 · 200만원 초과'], [[
-          individualExceedance(data.rebates, period) + '건', current.filter(entry => entry.exceedsLimit).length + '건',
-        ]]) +
+      const cards = [
+        ['이번 달 승인 요청 수', list.length + '건'],
+        ['영업임원 승인 대상 수', list.filter(entry => entry.approver === '영업임원').length + '건'],
+        ['거래처별 대 관련자 합산 · 200만원 초과', individualExceedance(data.rebates, period) +
+          '건 대 ' + current.filter(entry => entry.exceedsLimit).length + '건'],
+      ];
+      content = '<div class="summary-cards">' + cards.map(([label, value]) =>
+        '<div class="summary-card"><p>' + label + '</p><strong>' + value + '</strong>' + originBadge('계산') + '</div>').join('') +
+        '</div><h2>승인 요청 목록</h2>' +
         table(['요청 · 계산', '구성 거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '현재 상태 · 모의'],
           list.map(entry => [groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver),
-            statusBadge(statusFor(entry))]));
+            statusBadge(statusFor(entry))]), { highlight: list.map(entry => entry.approver === '영업임원') });
     }
 
     const navigation = {
@@ -394,16 +405,18 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
 <title>${navigation[activeView]} | 판매장려금 지급 검토</title><style>${workspaceStyles}</style></head><body>
 <div class="workspace">
 <aside class="sidebar"><p class="brand">판매장려금 지급 검토</p><nav aria-label="업무 메뉴">${menu}</nav></aside>
-<main><header class="toolbar"><h1>${navigation[activeView]}</h1>
+<main><header class="toolbar"><h1>${navigation[activeView]}</h1><div class="toolbar-controls">
 <form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
 <label>시연 역할 <select name="role">${options(roles, role)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 ${['accounting', 'followup', 'documents', 'review', 'ai-log'].includes(view) ? '<input type="hidden" name="view" value="' + escape(view) + '">' : ''}
-<button class="primary">적용</button></form></header>
-<div class="content">${content}</div>
-<details class="reset"><summary>정산월 초기화</summary><p>${escape(period)}의 공유 결정·소명·서류·변경·AI 이력·회계 작업을 초기화합니다.</p>
+<button class="primary">적용</button></form>
+<details class="settings"><summary>설정</summary><div class="settings-panel"><p>${escape(period)}의 공유 결정·소명·서류·변경·AI 이력·회계 작업을 초기화합니다.</p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
-<button name="action" value="reset">정산월 초기화</button></form></details>
+<button name="action" value="reset">정산월 초기화</button></form></div></details></div></header>
+<div class="content">${content}</div>
+<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값 · 모의는 시연용 서류와 외부 처리 · 프로젝트 가정은 시연에서 적용한 기준</p>
+<p>가상 기업 Aurora 그룹 데이터 기반 시연 / 외부 발송과 지급은 모의 처리</p></footer>
 </main></div><script>
 for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListener('submit',async event=>{
   event.preventDefault();

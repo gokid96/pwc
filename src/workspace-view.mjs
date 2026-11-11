@@ -6,6 +6,10 @@ const badgeTypes = [
   ['승인', 'approved'],
 ];
 
+export function originBadge(label) {
+  return '<small class="origin-badge">' + label + '</small>';
+}
+
 export function statusBadge(label) {
   const type = badgeTypes.find(([status]) => label.includes(status))?.[1] ?? 'neutral';
   return '<span class="status-badge status-' + type + '">' + label + '</span>';
@@ -59,7 +63,22 @@ tbody tr:hover{background:#fafbfd}
 .status-hold{background:#fff1d8;color:#704701}
 .status-review{background:#fbe9ee;color:#90354e}
 .status-check{background:#eeeafb;color:#59438c}
-.reset{margin-top:1.5rem;color:var(--muted);font-size:.9rem}
+.summary-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:1rem;margin-bottom:1.5rem}
+.summary-card{padding:1rem;border:1px solid var(--border);border-radius:8px;background:#fff}
+.summary-card p{margin:0;color:var(--muted);font-size:.9rem}
+.summary-card strong{display:inline-block;margin-top:.3rem;font-size:1.55rem;font-variant-numeric:tabular-nums}
+.executive-row td{background:#f1f5ff}
+.executive-row td:first-child{box-shadow:inset 3px 0 var(--accent)}
+.executive-row td:nth-child(4){color:var(--accent);font-weight:700}
+.origin-badge{display:inline-block;margin-inline-start:.4em;padding:.06em .38em;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:.72rem;font-weight:500;white-space:nowrap;vertical-align:middle}
+.toolbar-controls{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+.settings{position:relative}
+.settings summary{list-style:none;border:1px solid var(--border);border-radius:6px;padding:.45rem .65rem;background:#fff}
+.settings summary::-webkit-details-marker{display:none}
+.settings-panel{position:absolute;z-index:2;right:0;top:calc(100% + .35rem);width:min(18rem,80vw);padding:1rem;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 20px #18263818}
+.settings-panel p,.settings-panel form{margin:0 0 .6rem}
+.workspace-footer{margin-top:1.25rem;color:var(--muted);font-size:.85rem}
+.workspace-footer p{margin:.35rem 0}
 summary{cursor:pointer}
 pre{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:52rem){

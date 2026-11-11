@@ -1,4 +1,5 @@
 import { fields, samples } from './condition.mjs';
+import { originBadge } from './workspace-view.mjs';
 
 export function documentView({ data, documents, calls, selectedId, link, escape, table, role }) {
   const canEdit = role === '영업지원팀';
@@ -6,14 +7,14 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
   const post = (name, label) => '<button name="action" value="' + name + '">' + label + '</button>';
   const disabled = canEdit ? '' : ' disabled';
-  let html = '<h2>텍스트 서류 · 모의</h2><p>시연용 텍스트를 사용하세요.</p>' +
+  let html = '<h2>서류 접수 목록</h2><p>시연용 텍스트를 사용하세요.</p>' +
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' + disabled +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
     data.agencies.map(row => '<option>' + escape(row.agency_id) + '</option>').join('') +
     '</select></label> <label>서류 <select name="sample" id="sample"><option value="">직접 입력</option>' +
     Object.entries(samples).map(([id, [name]]) => '<option value="' + id + '">' + name + ' · 모의</option>').join('') +
     '</select></label> <label>.txt <input type="file" id="text-file" accept=".txt,text/plain"></label>' +
-    '<p><label>원문 <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
+    '<p><label>서류 내용 ' + originBadge('모의') + ' <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
     post('document_add', '접수') + '</fieldset></form>' +
     '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))) +
     ';const sample=document.getElementById("sample");const original=document.getElementById("document-text");' +
@@ -31,11 +32,11 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
     '<form method="post" action="' + action + '" data-ai><fieldset' + disabled + '>' +
     post('document_extract', 'AI 추출') + ' ' +
     (Object.values(samples).some(([, text]) => text === selected.original)
-      ? post('document_timeout', '모의 서류로 시간 초과 확인') : '') + '</fieldset></form>' +
+      ? post('document_timeout', '시간 초과 확인' + originBadge('모의')) : '') + '</fieldset></form>' +
     '<form method="post" action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
     '><legend>담당자 확인</legend>' +
-    table(['원문', '추출 후보 · 줄 번호', '확인 값 · 모의'], [[
-      '<pre>' + escape(selected.original) + '</pre>',
+    table(['서류 내용', '추출 후보 · 줄 번호', '확인 값'], [[
+      originBadge('모의') + '<pre>' + escape(selected.original) + '</pre>',
       Object.entries(fields).map(([key, label]) => {
         const result = latest?.result?.[key];
         return '<p>' + label + ' · ' + (result?.needsReview !== false ? '확인 필요' : '후보 1개') +
@@ -60,7 +61,7 @@ export function documentView({ data, documents, calls, selectedId, link, escape,
 }
 
 export function aiLog(calls, escape) {
-  return '<h2>AI 요청·응답 기록 · 모의</h2>' + calls.map(row =>
+  return '<h2>AI 요청·응답 기록</h2>' + calls.map(row =>
     '<details><summary>' + escape(row.created_at.toISOString()) + ' · ' +
     (row.kind === 'draft' ? '요청서 초안' : '서류 추출') + ' · ' +
     (row.finished_at ? row.result ? '완료' : '실패' : '처리 중') + '</summary>' +
@@ -69,23 +70,23 @@ export function aiLog(calls, escape) {
 }
 
 export function reviewView(records, { escape, table, source, money, link }) {
-  return '<h2>재검토 대상 · 프로젝트 가정</h2><p>변경 전후 연결된 거래처를 대상으로 선택한 월의 지급 검토 건과 같은 해 이전 정산월의 원본 승인 건을 포함합니다. 원본 지급일이 있으면 사후 검토 대상으로 표시합니다.</p>' +
+  return '<h2>재검토 대상 목록</h2><p>변경 전후 연결된 거래처를 대상으로 선택한 월의 지급 검토 건과 같은 해 이전 정산월의 승인 건을 포함합니다. 자료에 지급일이 있으면 사후 검토 대상으로 표시합니다.' + originBadge('프로젝트 가정') + '</p>' +
     records.map(record => {
       const scope = record.details.scope;
       const heading = record.kind === 'change' ? '계좌 변경 적용' : '관련자 그룹 확인';
       const requests = (items, title) => '<h4>' + title + '</h4>' +
-        table(['거래처', '합계', '승인권자', '원본 행'], items.map(item =>
+        table(['거래처 · 원본', '합계 · 계산', '승인권자 · 계산', '원본 행'], items.map(item =>
           [item.members.map(escape).join(', '), money(item.amount), escape(item.approver), item.sources.map(source).join('<br>')]));
       return '<section><h3>' + heading + ' · ' + escape(record.agency_id) + '</h3><p>대상 ' +
         scope.agencies.map(escape).join(', ') + ' · 정산월 ' + escape(record.period) + '</p>' +
-        requests(scope.before, '변경 전 등록 정보 · 계산') + requests(scope.after, '변경 후 등록 정보 · 계산') +
+        requests(scope.before, '변경 전 등록 정보') + requests(scope.after, '변경 후 등록 정보') +
         (scope.retained.length ? '<p><strong>실제 승인 경로 · 기존 임원 경로 유지 · 소명 대기</strong></p><p>동일 입금계좌 기록 ' +
           scope.retained.map(row => escape(row.agencyId) + ' · ' + source(row.source)).join('<br>') + '</p>'
           : '<p>실제 승인 경로 · 현재 등록 정보의 승인권자 기준</p>') +
         '<h4>선택한 월 지급 검토 · 재검토 필요</h4><p><a href="' +
         link({}) + '">승인 요청 목록</a> · <a href="' + link({ view: 'accounting' }) +
         '">회계 작업 목록</a></p>' +
-        '<h4>이전 정산월 원본 승인 건</h4>' + table(['정산월', '거래처', '장려금', '지급일', '검토 상태', '원본 행'],
+        '<h4>이전 정산월 승인 건</h4>' + table(['정산월 · 원본', '거래처 · 원본', '장려금 · 원본', '지급일 · 원본', '검토 상태', '원본 행'],
           scope.history.map(row => [escape(row.period), escape(row.agency), money(Number(row.amount)),
             escape(row.date), row.paid ? '사후 검토 대상' : '재검토 필요', source(row.source)])) + '</section>';
     }).join('');
