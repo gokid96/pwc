@@ -19,7 +19,7 @@ test('AI candidates require source text and flag omitted or conflicting values',
     run: async () => { throw new Error('timeout'); },
   });
   assert.equal(failed.result, null);
-  assert.match(failed.request.input, /D-011/);
+  assert.match(failed.request.contents[0].parts[0].text, /D-011/);
   const draft = await callAssistant('draft', { reason: '모의 거절' }, {
     run: async () => ({ evidence: ['사용 근거'], draft: '확인 자료를 보내 주세요.' }),
   });
