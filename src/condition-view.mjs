@@ -1,10 +1,11 @@
 import { documentSamples, fields } from './condition.mjs';
 
-export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role, open }) {
+export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role, open, agency }) {
   const canEdit = open && role === '영업지원팀';
   const canSubmit = open && role === '대리점';
-  const samples = canSubmit ? documentSamples(data) : {};
-  const selected = documents.find(row => row.id === selectedId);
+  const samples = canSubmit ? Object.fromEntries(Object.entries(documentSamples(data)).filter(([key]) =>
+    agency === (key === 'explanation' ? 'D-024' : 'D-011'))) : {};
+  const selected = documents.find(row => String(row.id) === selectedId);
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
   const post = (name, label) => '<button' + (['document_add', 'document_confirm'].includes(name) ? ' class="primary"' : '') +
     ' name="action" value="' + name + '">' + label + '</button>';
@@ -12,7 +13,7 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
   let html = '<h2>서류 접수 목록</h2>' + (canSubmit ?
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
-    data.agencies.map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
+    data.agencies.filter(row => row.agency_id === agency).map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
       '>' + escape(row.agency_id) + '</option>').join('') +
     '</select></label> <label>.txt <input type="file" id="text-file" accept=".txt,text/plain"></label>' +
     '<div class="sample-buttons"><strong>작성 양식</strong><div class="button-group">' +
@@ -89,7 +90,8 @@ export function reviewView(records, { escape, table, source, money, link }) {
       return '<section id="review-' + escape(record.id) + '"><h3>' + heading + ' · ' + escape(record.agency_id) + '</h3><p>대상 ' +
         scope.agencies.map(escape).join(', ') + ' · 정산월 ' + escape(record.period) + '</p>' +
         requests(scope.before, '변경 전 등록 정보') + requests(scope.after, '변경 후 등록 정보') +
-        (scope.retained.length ? '<p><strong>실제 승인 경로 · 기존 임원 경로 유지 · 소명 대기</strong></p><p>동일 입금계좌 기록 ' +
+        (scope.retained.length ? '<p><strong>실제 승인 경로 · 기존 임원 경로 유지' +
+          (record.resolved ? ' · 재검토 승인' : ' · 재검토 중') + '</strong></p><p>동일 입금계좌 기록 ' +
           scope.retained.map(row => escape(row.agencyId) + ' · ' + source(row.source)).join('<br>') + '</p>'
           : '<p>실제 승인 경로 · 현재 등록 정보의 승인권자 기준</p>') +
         '<h4>선택한 월 지급 검토 · 재검토 필요</h4><p><a href="' +

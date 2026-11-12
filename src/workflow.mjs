@@ -1,4 +1,4 @@
-import { steps, labels, followupState, followupError } from './followup.mjs';
+import { steps, labels, requestProgress, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope, summaryChecks } from './condition.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
 import { workspaceStyles, statusBadge, originBadge } from './workspace-view.mjs';
@@ -18,6 +18,10 @@ const roleViews = [
   ['agency-replies', 'documents'],
 ];
 const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인 요청' };
+const eventLabels = {
+  document_received: '서류 접수', account_changed: '계좌 변경 적용',
+  review_approve: '재검토 승인 · 보류 해제', review_reject: '재검토 거절', review_clarify: '재검토 추가 확인 요청',
+};
 const money = amount => new Intl.NumberFormat('ko-KR').format(amount) + '원';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -80,6 +84,11 @@ async function saveDecision(db, period, groupId, role, action, reason) {
   }
 }
 
+function latestReview(reviews, entry) {
+  return entry && reviews.findLast(review => review.details.scope.agencies.some(id =>
+    entry.group.members.some(member => member.agencyId === id)));
+}
+
 export function createWorkflow(pool, readData, calculate, assistant = callAssistant) {
   let schema;
   function ensureSchema() {
@@ -99,6 +108,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         period text NOT NULL, group_id text NOT NULL, role text NOT NULL,
         action text NOT NULL, reason text NOT NULL, acted_at timestamptz NOT NULL DEFAULT now()
       )`);
+      await db.query('ALTER TABLE w07_event ADD COLUMN IF NOT EXISTS review_id bigint');
+      await db.query('ALTER TABLE w07_event ADD COLUMN IF NOT EXISTS agency_id text');
       await db.query(`CREATE TABLE IF NOT EXISTS w07_document (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, period text NOT NULL,
         agency_id text NOT NULL, original text NOT NULL, confirmed jsonb, applied boolean NOT NULL DEFAULT false
@@ -145,7 +156,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         Location: '/?' + new URLSearchParams({
           ...periodQuery, view: historicalReview && selected === '0' ? 'review' : roleViews[Number(selected)][0],
         }) + (historicalReview && selected === '0' ? '#historical-review' : ''),
-        'Set-Cookie': 'w07_role=' + selected + '; Path=/; HttpOnly; Secure; SameSite=Lax',
+        'Set-Cookie': ['w07_role=' + selected + '; Path=/; HttpOnly; Secure; SameSite=Lax',
+          ...(selected === '3' ? ['w07_dealer=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax'] : [])],
         'Cache-Control': 'no-store',
       }).end();
       return;
@@ -184,12 +196,15 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         : await db.query('SELECT * FROM w07_ai_call WHERE period = $1 ORDER BY id', [period]);
       return { reviews: reviews.rows, rows: decisions.rows, events: history.rows, documents: docs.rows, calls: calls.rows };
     });
-    const { reviews, rows, events, documents, calls } = snapshot;
+    const { reviews, rows, events, calls } = snapshot;
     const effective = calculate(applyChanges(data, reviews));
     const originalList = original.requests.filter(entry => entry.period === period);
     const current = effective.requests.filter(entry => entry.period === period);
-    const affected = new Set(reviews.flatMap(review => review.details.scope.agencies));
-    const isAffected = entry => entry.group.members.some(member => affected.has(member.agencyId));
+    const saved = new Map(rows.map(row => [row.group_id, row]));
+    const eventsFor = id => events.filter(event => event.group_id === id);
+    const progressFor = entry => entry ? requestProgress(saved.get(entry.group.groupId),
+      eventsFor(entry.group.groupId), entry.exceedsLimit, latestReview(reviews, entry)) : {};
+    const isAffected = entry => progressFor(entry).held;
     const retainedIds = new Set(reviews.filter(review => review.details.scope.retained.length)
       .flatMap(review => review.details.scope.agencies));
     const retained = entry => entry.group.members.some(member => retainedIds.has(member.agencyId));
@@ -198,11 +213,33 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       retained(entry) || (hasRecord(entry) && !current.some(now => now.group.groupId === entry.group.groupId)))]
       .sort((a, b) => a.group.groupId.localeCompare(b.group.groupId));
     const item = list.find(entry => entry.group.groupId === groupId);
+    const dealer = request.headers.cookie?.match(/(?:^|;\s*)w07_dealer=(D-\d+)(?:;|$)/)?.[1];
+    const agency = role === '대리점' && data.agencies.some(row => row.agency_id === dealer) ? dealer : null;
+    if (role === '대리점' && (request.method === 'POST' && query.has('dealer') || !agency)) {
+      const selectedDealer = query.get('dealer');
+      if (request.method === 'POST') {
+        if (['cross-site', 'same-site'].includes(request.headers['sec-fetch-site']) ||
+            !data.agencies.some(row => row.agency_id === selectedDealer) || !/^D-\d+$/.test(selectedDealer ?? '')) return denied();
+        response.writeHead(303, {
+          Location: '/?' + new URLSearchParams({ period, view: 'agency-replies' }),
+          'Set-Cookie': 'w07_dealer=' + selectedDealer + '; Path=/; HttpOnly; Secure; SameSite=Lax',
+          'Cache-Control': 'no-store',
+        }).end();
+        return;
+      }
+      return send(200, entryPage('거래처 선택', '<div class="button-group">' + data.agencies.map(row =>
+        '<form method="post" action="' + link({ dealer: row.agency_id }) + '"><button>' +
+        escape(row.agency_id) + '</button></form>').join('') + '</div>'));
+    }
+    const belongsToAgency = entry => entry && entry.group.members.some(member => member.agencyId === agency);
+    if (agency && item && !belongsToAgency(item)) return denied();
+    const documents = agency ? snapshot.documents.filter(row => row.agency_id === agency) : snapshot.documents;
     if (view === 'accounting' && groupId && !rows.some(row => row.group_id === groupId && row.created_at)) return denied();
-    const caseContext = requestedCase && list.some(entry => entry.group.groupId === requestedCase)
+    const caseContext = requestedCase && list.some(entry => entry.group.groupId === requestedCase && (!agency || belongsToAgency(entry)))
       ? { case: requestedCase } : {};
     if (groupId && !item) return send(404, '정산 요청을 찾을 수 없습니다.');
-    const document = documents.find(row => row.id === documentId);
+    const document = documents.find(row => String(row.id) === documentId);
+    if (agency && documentId && !document) return denied();
     const redirect = extras => {
       response.writeHead(303, { Location: '/?' + new URLSearchParams({ period, view, ...extras }) }).end();
     };
@@ -228,21 +265,28 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           return send(403, '이 업무 역할에서는 처리할 수 없습니다.');
         }
         if (action === 'document_add') {
-          const agency = form.get('agency');
           const original = form.get('text')?.trim();
-          if (!data.agencies.some(row => row.agency_id === agency) || !original || original.length > 6000 ||
+          if (form.get('agency') !== agency) return denied();
+          if (!original || original.length > 6000 ||
               /[\u0000-\u0008\u000e-\u001f]/.test(original)) return send(400, '거래처와 텍스트를 확인해 주세요.');
-          const { rows: [saved] } = await transaction(pool, period, db => db.query(
-            'INSERT INTO w07_document (period,agency_id,original) VALUES ($1,$2,$3) RETURNING id', [period, agency, original]));
-          return redirect({ view: 'documents', document: saved.id, ...caseContext });
+          const id = await transaction(pool, period, async db => {
+            const { rows: [saved] } = await db.query(
+              'INSERT INTO w07_document (period,agency_id,original) VALUES ($1,$2,$3) RETURNING id', [period, agency, original]);
+            const target = list.find(entry => entry.group.groupId === caseContext.case) ?? list.find(belongsToAgency);
+            if (target) await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,agency_id)
+              VALUES ($1,$2,$3,'document_received',$4,$5)`,
+              [period, target.group.groupId, role, '접수 번호 ' + saved.id, agency]);
+            return saved.id;
+          });
+          return redirect({ view: 'documents', document: id, ...caseContext });
         }
         if (['document_extract', 'document_timeout', 'ai_draft', 'ai_summary'].includes(action)) {
           const draft = action === 'ai_draft';
           const summary = action === 'ai_summary';
           const groupCall = draft || summary;
           const decision = rows.find(row => row.group_id === groupId);
-          const latest = events.filter(event => event.group_id === groupId).at(-1);
-          const state = followupState(decision, latest?.action, item?.exceedsLimit);
+          const state = progressFor(item).state;
+          const reviewDecision = eventsFor(groupId).findLast(event => ['review_reject', 'review_clarify'].includes(event.action));
           if (summary ? !item : draft ? !['draft', 'received'].includes(state) : !document) {
             return send(409, '현재 단계에서 사용할 수 없습니다.');
           }
@@ -263,7 +307,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
             sharedDeposits: item.collectionEvidence.map(entry => ({
               agencies: [...new Set(entry.deposits.map(row => row.agencyId))] })),
-            ...(draft ? { reason: decision.reason } : {
+            ...(draft ? { reason: reviewDecision?.reason || decision?.reason || latestReview(reviews, item)?.details.reason || '' } : {
               approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
               options: !decision && !isAffected(item) ? Object.values(decisions) : [],
               allowedChecks: ['registration', ...(item.group.links.length ? ['relationship'] : []),
@@ -327,7 +371,13 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           const inserted = await db.query(`INSERT INTO w07_review (period,agency_id,document_id,kind,details)
             VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [period, agency.agency_id, stored.id, kind, details]);
           if (!inserted.rowCount) return 409;
-          if (kind === 'change') await db.query('UPDATE w07_document SET applied=true WHERE id=$1', [stored.id]);
+          if (kind === 'change') {
+            await db.query('UPDATE w07_document SET applied=true WHERE id=$1', [stored.id]);
+            const target = list.find(entry => entry.group.members.some(member => member.agencyId === stored.agency_id));
+            if (target) await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,agency_id)
+              VALUES ($1,$2,$3,'account_changed',$4,$5)`,
+              [period, target.group.groupId, role, '접수 번호 ' + stored.id + ' · ' + stored.confirmed.reason, stored.agency_id]);
+          }
         });
         if (error) return send(error, '확인 값과 현재 처리 단계를 다시 확인해 주세요.');
         return redirect(action === 'document_confirm'
@@ -343,7 +393,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           await db.query('DELETE FROM w07_decision WHERE period = $1', [period]);
           return;
         }
-        const { rows: currentReviews } = await db.query('SELECT details FROM w07_review WHERE period=$1', [period]);
+        const { rows: currentReviews } = await db.query('SELECT * FROM w07_review WHERE period=$1 ORDER BY id', [period]);
         if (action === 'bulk_approve') {
           const { rows: currentDecisions } = await db.query('SELECT group_id FROM w07_decision WHERE period=$1', [period]);
           return approveSupportRequests({
@@ -353,31 +403,52 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             approve: id => saveDecision(db, period, id, role, 'approve', ''),
           });
         }
-        if (currentReviews.some(review => review.details.scope.agencies.some(id =>
-          item.group.members.some(member => member.agencyId === id)))) return 409;
+        const review = latestReview(currentReviews, item);
+        if (review?.id !== latestReview(reviews, item)?.id) return 409;
         const ids = [period, groupId];
         const { rows: [record] } = await db.query(`SELECT d.*, t.created_at FROM w07_decision d
           LEFT JOIN w07_accounting_task t USING (period, group_id) WHERE d.period = $1 AND d.group_id = $2`, ids);
-        const { rows: [latest] } = await db.query(`SELECT id, action FROM w07_event
-          WHERE period = $1 AND group_id = $2 ORDER BY id DESC LIMIT 1`, ids);
-        if (form.get('revision') !== (latest?.id ?? '0')) return 409;
+        const { rows: currentEvents } = await db.query(`SELECT * FROM w07_event
+          WHERE period = $1 AND group_id = $2 ORDER BY id`, ids);
+        const recipient = currentEvents.findLast(event => ['send', 'resend'].includes(event.action));
+        if (action === 'reply' && (!recipient || agency !== (recipient.agency_id ?? groupId))) return 403;
+        const latest = currentEvents.at(-1);
+        if (form.get('revision') !== String(latest?.id ?? '0')) return 409;
+        const { state, held } = requestProgress(record, currentEvents, item.exceedsLimit, review);
         if (Object.hasOwn(decisions, action)) {
-          if (role !== item.approver) return 403;
+          if (role !== (held ? '영업임원' : item.approver)) return 403;
           if (reason.length > 1000 || (action !== 'approve' && !reason)) return 400;
+          if (held) {
+            if (state !== 'resubmitted') return 409;
+            if (action === 'approve') {
+              if (!record) await saveDecision(db, period, groupId, role, action, reason);
+              else if (record.action !== 'approve') {
+                await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,acted_at)
+                  VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
+                await db.query(`UPDATE w07_decision SET role=$3, action='approve', reason=$4, acted_at=now()
+                  WHERE period=$1 AND group_id=$2`, [...ids, role, reason]);
+                await db.query('INSERT INTO w07_accounting_task (period,group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', ids);
+              }
+            }
+            await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,review_id)
+              VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, role, 'review_' + action, reason, review.id]);
+            return;
+          }
           if (record) return 409;
           await saveDecision(db, period, groupId, role, action, reason);
           return;
         }
-        const state = followupState(record, latest?.action, item.exceedsLimit);
         const invalid = followupError(action, state, role, reason);
         if (invalid) return invalid;
-        if (action === 'resubmit') {
+        if (action === 'resubmit' && !held) {
           await db.query(`INSERT INTO w07_event (period, group_id, role, action, reason, acted_at)
             VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
           await db.query('DELETE FROM w07_decision WHERE period = $1 AND group_id = $2', ids);
         }
-        await db.query('INSERT INTO w07_event (period, group_id, role, action, reason) VALUES ($1,$2,$3,$4,$5)',
-          [...ids, role, action, reason]);
+        await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,review_id,agency_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [...ids, role, action, reason, review?.id ?? null,
+            action === 'reply' ? agency : ['send', 'resend'].includes(action) ? groupId : null]);
       });
       if (error) return send(error, {
         400: '필요한 내용이나 사유를 1~1,000자로 입력해 주세요.',
@@ -389,10 +460,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       return;
     }
 
-    const saved = new Map(rows.map(row => [row.group_id, row]));
-    const eventsFor = id => events.filter(event => event.group_id === id);
-    const stateFor = entry => followupState(saved.get(entry.group.groupId),
-      eventsFor(entry.group.groupId).at(-1)?.action, entry.exceedsLimit);
+    const stateFor = entry => progressFor(entry).state;
     const onHold = state => ['draft', 'waiting', 'received', 'verified'].includes(state);
     const statusFor = entry => {
       if (!open) {
@@ -401,8 +469,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date) ? '지급 완료' : row.approval_status))];
         return statuses.join(' · ');
       }
-      if (isAffected(entry)) return '재검토 필요' + (saved.get(entry.group.groupId)?.created_at ? ' · 확인 대기' : '');
       const state = stateFor(entry);
+      if (isAffected(entry)) return role === roles[2] ? '재검토 필요 · 확인 대기' : '재검토 · ' + (labels[state] ?? '소명 대기');
       if (onHold(state)) return '보류 · ' + labels[state];
       return labels[state] ?? decisions[saved.get(entry.group.groupId)?.action] ?? '승인 대기';
     };
@@ -417,10 +485,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     if (view === 'documents') {
       nextTask = role === '대리점' ? '제출할 서류를 선택하세요.' : '제출된 서류를 확인하세요.';
       content = documentView({ data, documents, calls, selectedId: documentId, selectedAgency: query.get('agency'),
-        link: extras => link({ ...extras, ...caseContext }), escape, table, role, open });
+        link: extras => link({ ...extras, ...caseContext }), escape, table, role, open, agency });
     } else if (view === 'review') {
       nextTask = '변경된 승인 경로와 재검토 대상을 확인하세요.';
-      content = reviewView(reviews, { escape, table, source, money, link });
+      content = reviewView(reviews.map(review => ({ ...review, resolved: events.some(event =>
+        event.review_id === review.id && event.action === 'review_approve') })), { escape, table, source, money, link });
     } else if (view === 'ai-log') {
       nextTask = '호출 기록을 열어 요청과 응답을 확인하세요.';
       content = aiLog(calls, escape, table, time);
@@ -431,16 +500,19 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
     } else if (view === 'agency-replies') {
-      const cases = list.filter(entry => eventsFor(entry.group.groupId).some(event => ['send', 'resend'].includes(event.action)));
+      const ownEvent = (event, id) => (event.agency_id ?? id) === agency;
+      const cases = list.filter(entry => belongsToAgency(entry) && eventsFor(entry.group.groupId)
+        .some(event => ['send', 'resend'].includes(event.action) && ownEvent(event, entry.group.groupId)));
       nextTask = '소명 요청을 열어 답변을 제출하세요.';
       content = '<h2>소명 요청</h2>' + table(['요청', '거래처', '답변 상태'], cases.map(entry => [
         '<a href="' + link({ group: entry.group.groupId }) + '">' + escape(entry.group.groupId) + '</a>',
-        members(entry), stateFor(entry) === 'waiting' ? '답변 대기' : '답변 제출',
+        escape(agency), stateFor(entry) === 'waiting' ? '답변 대기' : '답변 제출',
       ]));
       const history = item && cases.includes(item) ? eventsFor(groupId)
-        .filter(event => ['send', 'resend', 'reply'].includes(event.action)) : [];
+        .filter(event => ['send', 'resend', 'reply'].includes(event.action) && ownEvent(event, groupId)) : [];
       if (history.length) {
-        const waiting = open && stateFor(item) === 'waiting' && !isAffected(item);
+        const recipient = eventsFor(groupId).findLast(event => ['send', 'resend'].includes(event.action));
+        const waiting = open && stateFor(item) === 'waiting' && recipient && ownEvent(recipient, groupId);
         content += '<h3>요청 ' + escape(groupId) + '</h3>' +
           table(['시각', '구분', '내용'], history.map(event =>
             [time(event.acted_at), event.action === 'reply' ? '답변' : '소명 요청', escape(event.reason)])) +
@@ -448,7 +520,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             '<input type="hidden" name="revision" value="' + escape(eventsFor(groupId).at(-1)?.id ?? '0') + '">' +
             '<label>답변 내용 <textarea name="reason" maxlength="1000" required></textarea></label> ' +
             '<button class="primary" name="action" value="reply">답변 제출</button></form>' : '') +
-          '<p><a href="' + link({ view: 'documents', agency: groupId, case: groupId }) + '">관련 서류 첨부</a></p>';
+          '<p><a href="' + link({ view: 'documents', case: groupId }) + '">관련 서류 첨부</a></p>';
       }
     } else if (view === 'followup') {
       nextTask = '소명할 요청을 선택하세요.';
@@ -465,14 +537,15 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const paidRecords = periodRecords.filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date));
       const deposits = data.collections.filter(row => ids.has(row.agency_id));
       const fields = { representative_name: '대표자', address: '주소', bank_account_no: '정산계좌' };
-      const enabled = open && role === item.approver && !record && !isAffected(item);
       const history = eventsFor(groupId);
       const state = stateFor(item);
+      const held = isAffected(item);
+      const enabled = open && (held ? role === roles[1] && state === 'resubmitted' : role === item.approver && !record);
       const revision = '<input type="hidden" name="revision" value="' + escape(history.at(-1)?.id ?? '0') + '">';
       const actions = open ? Object.entries(steps).filter(([, [from]]) => from === state) : [];
       const draft = calls.filter(call => call.kind === 'draft' && call.group_id === groupId &&
         call.created_at >= (record?.acted_at ?? new Date(0))).at(-1);
-      const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0] && !isAffected(item);
+      const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0];
       const draftForm = canDraft ? '<p>요청할 증빙</p>' +
         (draft?.result ? '<ul>' + draft.result.evidence.map(value => '<li>' + escape(value) + '</li>').join('') + '</ul>'
           : draft?.finished_at ? '<p>AI 초안 생성 실패, 직접 작성</p>' : '') +
@@ -480,7 +553,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           escape(draft.result.draft) + '</textarea></label></p>' : '') +
         '<form method="post" data-ai action="' + link({ group: groupId }) +
         '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form>' : '';
-      const followup = actions.length && role === actions[0][1][2] && !isAffected(item)
+      const followup = actions.length && role === actions[0][1][2]
         ? '<h3 id="followup">후속 작업</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset><legend>' + labels[state] +
         '</legend>' + (state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
@@ -520,11 +593,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           ? link({ period: reviewPeriod, view: 'review' }) + '#historical-review'
           : '/?' + escape(new URLSearchParams({ period: reviewPeriod, view: 'roles', after: 'historical-review' }).toString())) +
           '">사후 검토 대상 보기</a>' : '지급 기록을 조회할 수 있습니다.';
-      } else if (isAffected(item)) {
-        nextTask = role === roles[0]
-          ? '정보 변경 재검토에서 승인 경로를 확인하세요. <a href="' + link({ view: 'review' }) + '">바로 가기</a>'
-          : '영업지원팀 재검토 대기';
-      } else if (record?.action === 'approve') {
+      } else if (held && role === roles[2]) {
+        nextTask = '재검토 승인 대기';
+      } else if (held && state === 'resubmitted') {
+        nextTask = enabled ? '변경 근거와 소명 답변을 검토하고 결정하세요.' : '영업임원 재검토 결정 대기';
+      } else if (!held && record?.action === 'approve') {
         nextTask = state === 'paymentReady' ? '지급 검토 가능' :
           role === roles[2] ? '지급 증빙을 확인하세요.' : '회계 지급 검토 대기';
       } else if (onHold(state)) {
@@ -564,7 +637,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ['서류 확인', relatedDocs.length > 0], ['재검토', relatedReviews.length > 0],
         ['회계 지급 검토', Boolean(record?.created_at)],
       ];
-      const active = relatedReviews.length ? 4 : relatedDocs.some(row => !row.confirmed) ? 3 :
+      const active = held && state === 'resubmitted' ? 4 : held ? 2 : relatedDocs.some(row => !row.confirmed) ? 3 :
         record?.created_at ? 5 : onHold(state) ? 2 : item.exceedsLimit ? 1 : 0;
       const progress = '<ol class="request-progress" aria-label="처리 단계">' + stages.map(([label, applicable], index) =>
         '<li' + (active === index ? ' aria-current="step"' : applicable ? '' : ' class="not-applicable"') + '>' + label + '</li>').join('') + '</ol>';
@@ -617,7 +690,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         '<h3 id="history">처리 이력</h3>' +
         table(['시각', '업무 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
-          steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 등록', escape(event.reason),
+          eventLabels[event.action] ?? steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 등록', escape(event.reason),
         ]));
     } else {
       const cards = [
@@ -626,7 +699,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ['200만원 초과 건', '거래처별로 보면 ' + individualExceedance(data.rebates, period) +
           '건 → 묶어서 보면 ' + current.filter(entry => entry.exceedsLimit).length + '건'],
       ];
-      const priority = entry => role === roles[1] && entry.exceedsLimit && !saved.has(entry.group.groupId) && !isAffected(entry) ? -1 :
+      const priority = entry => role === roles[1] && (isAffected(entry) ? stateFor(entry) === 'resubmitted' :
+        entry.exceedsLimit && !saved.has(entry.group.groupId)) ? -1 :
         isAffected(entry) || onHold(stateFor(entry)) ? 0 : entry.exceedsLimit ? 1 : 2;
       const allRequests = query.get('all') === '1';
       const ordered = list.filter(entry => role !== roles[1] || allRequests || priority(entry) === -1)

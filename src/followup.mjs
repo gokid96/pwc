@@ -21,6 +21,23 @@ export function followupState(record, latest, executive) {
   return latest === 'resubmit' ? 'resubmitted' : null;
 }
 
+export function requestProgress(record, events, executive, review) {
+  const business = events.filter(event => Object.hasOwn(steps, event.action) || event.action.startsWith('review_'));
+  if (!review) return { state: followupState(record, business.at(-1)?.action, executive), held: false };
+  const matching = business.filter(event => String(event.review_id) === String(review.id));
+  const latest = matching.at(-1)?.action;
+  if (matching.some(event => event.action === 'review_approve')) {
+    return { state: latest === 'payment' ? 'paymentReady' : 'paymentPending', held: false };
+  }
+  const previous = business.filter(event => event.acted_at >= (record?.acted_at ?? new Date(0))).at(-1);
+  const ongoingReview = previous?.review_id && !business.some(event =>
+    event.review_id === previous.review_id && event.action === 'review_approve');
+  const inherited = (record?.action !== 'approve' || ongoingReview) &&
+    Object.hasOwn(steps, previous?.action) && previous.action !== 'payment'
+    ? previous.action : null;
+  return { state: steps[latest ?? inherited]?.[1] ?? 'draft', held: true };
+}
+
 export function followupError(action, state, role, reason) {
   if (!Object.hasOwn(steps, action)) return 400;
   const [from, , owner] = steps[action];
