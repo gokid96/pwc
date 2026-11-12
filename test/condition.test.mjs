@@ -20,10 +20,14 @@ test('AI candidates require source text and flag omitted or conflicting values',
   });
   assert.equal(failed.result, null);
   assert.match(failed.request.contents[0].parts[0].text, /D-011/);
-  const draft = await callAssistant('draft', { reason: '모의 거절' }, {
-    run: async () => ({ evidence: ['사용 근거'], draft: '확인 자료를 보내 주세요.' }),
+  const draft = await callAssistant('draft', { reason: '거절 D-011 D-037', recipient: {
+    sharedDeposit: true, registrationDiffers: true,
+  } }, {
+    run: async () => ({ evidence: ['통장 사본', '공동 계좌 사용 경위서'] }),
   });
-  assert.deepEqual(draft.result.evidence, ['사용 근거']);
+  assert.deepEqual(draft.result.evidence, ['통장 사본', '공동 계좌 사용 경위서']);
+  assert.match(draft.result.draft, /귀 거래처의 입금 기록에 등록 정산계좌와 다른 계좌/);
+  assert.doesNotMatch(draft.result.draft, /D-011|D-037|동일한 정산계좌/);
 });
 
 test('June account change preserves original data and finds earlier paid approvals', async () => {

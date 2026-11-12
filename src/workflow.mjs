@@ -229,7 +229,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       }
       return send(200, entryPage('거래처 선택', '<div class="button-group">' + data.agencies.map(row =>
         '<form method="post" action="' + link({ dealer: row.agency_id }) + '"><button>' +
-        escape(row.agency_id) + '</button></form>').join('') + '</div>'));
+        escape(row.agency_id) + ' · ' + escape(row.agency_name) + '</button></form>').join('') + '</div>'));
     }
     const belongsToAgency = entry => entry && entry.group.members.some(member => member.agencyId === agency);
     if (agency && item && !belongsToAgency(item)) return denied();
@@ -240,8 +240,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     if (groupId && !item) return send(404, '정산 요청을 찾을 수 없습니다.');
     const document = documents.find(row => String(row.id) === documentId);
     if (agency && documentId && !document) return denied();
-    const redirect = extras => {
-      response.writeHead(303, { Location: '/?' + new URLSearchParams({ period, view, ...extras }) }).end();
+    const redirect = (extras, hash = '') => {
+      response.writeHead(303, { Location: '/?' + new URLSearchParams({ period, view, ...extras }) + hash }).end();
     };
 
     if (request.method === 'POST') {
@@ -302,12 +302,18 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
               .filter(account => account && account !== 'NONE'));
             return accounts.size > 1;
           });
+          const recipient = groupCall ? groupId : null;
+          const recipientDeposits = sharedDeposits.filter(entry => entry.deposits.some(row => row.agencyId === recipient));
+          const registration = agencyAccounts.get(recipient);
           const input = groupCall ? {
             agencies: item.group.members.map(member => member.agencyId),
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
             sharedDeposits: item.collectionEvidence.map(entry => ({
               agencies: [...new Set(entry.deposits.map(row => row.agencyId))] })),
-            ...(draft ? { reason: reviewDecision?.reason || decision?.reason || latestReview(reviews, item)?.details.reason || '' } : {
+            ...(draft ? { reason: reviewDecision?.reason || decision?.reason || latestReview(reviews, item)?.details.reason || '',
+              recipient: { sharedDeposit: recipientDeposits.length > 0, registrationDiffers: Boolean(registration) &&
+                registration !== 'NONE' && recipientDeposits.some(entry => entry.account !== registration) },
+            } : {
               approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
               options: !decision && !isAffected(item) ? Object.values(decisions) : [],
               allowedChecks: ['registration', ...(item.group.links.length ? ['relationship'] : []),
@@ -380,8 +386,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           }
         });
         if (error) return send(error, '확인 값과 현재 처리 단계를 다시 확인해 주세요.');
-        return redirect(action === 'document_confirm'
-          ? { view: 'documents', document: document.id, ...caseContext } : { view: 'review', ...caseContext });
+        return action === 'document_confirm'
+          ? redirect({ view: 'documents', document: document.id, ...caseContext }, '#document-confirmation')
+          : redirect({ view: 'review', ...caseContext });
       }
       if (!item && !['reset', 'bulk_approve'].includes(action)) return send(400, '잘못된 요청입니다.');
       const error = await transaction(pool, period, async db => {
@@ -544,17 +551,22 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const revision = '<input type="hidden" name="revision" value="' + escape(history.at(-1)?.id ?? '0') + '">';
       const actions = open ? Object.entries(steps).filter(([, [from]]) => from === state) : [];
       const draft = calls.filter(call => call.kind === 'draft' && call.group_id === groupId &&
-        call.created_at >= (record?.acted_at ?? new Date(0))).at(-1);
+        call.created_at >= (record?.acted_at ?? new Date(0)) && (!call.result || call.result.grounded)).at(-1);
       const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0];
-      const draftForm = canDraft ? '<p>요청할 증빙</p>' +
+      const draftForm = canDraft ? '<section class="ai-draft"><p>요청할 증빙</p>' +
         (draft?.result ? '<ul>' + draft.result.evidence.map(value => '<li>' + escape(value) + '</li>').join('') + '</ul>'
           : draft?.finished_at ? '<p>AI 초안 생성 실패, 직접 작성</p>' : '') +
         (draft?.result ? '<p><label>AI 요청서 초안 · 복사 후 수정 <textarea readonly>' +
           escape(draft.result.draft) + '</textarea></label></p>' : '') +
-        '<form method="post" data-ai action="' + link({ group: groupId }) +
-        '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form>' : '';
+        '<form method="post" data-ai="draft" action="' + link({ group: groupId }) +
+        '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form></section>' : '';
+      const sent = history.findLast(event => ['send', 'resend'].includes(event.action));
+      const answer = history.findLast(event => event.action === 'reply');
+      const correspondence = (sent ? '<p><strong>보낸 요청서</strong><br>' + escape(sent.reason) + '</p>' : '') +
+        (answer ? '<p><strong>받은 답변</strong><br>' + escape(answer.reason) + '</p>' : '');
       const followup = actions.length && role === actions[0][1][2]
-        ? '<h3 id="followup">후속 작업</h3>' + draftForm + '<form method="post" action="' + link({ group: groupId }) +
+        ? '<h3 id="followup">후속 작업</h3>' + (state === 'received' ? correspondence : '') + draftForm +
+          '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset><legend>' + labels[state] +
         '</legend>' + (state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
           escape(state === 'draft' && canDraft ? draft?.result?.draft : '') + '</textarea></label> ') +
@@ -610,23 +622,27 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       } else {
         nextTask = enabled ? '승인 여부를 결정하세요.' : '기록된 결정을 확인하세요.';
       }
+      const previousReason = timeline.findLast(event =>
+        ['reject', 'clarify', 'review_reject', 'review_clarify'].includes(event.action) && event.reason);
+      const clarificationReview = history.findLast(event => event.action === 'verify');
       const decision = enabled ? '<section class="decision-panel"><h3>결정</h3>' +
+        (role === roles[1] ? (previousReason ? '<p><strong>이전 결정 사유</strong><br>' + escape(previousReason.reason) + '</p>' : '') +
+          correspondence + (clarificationReview ? '<p><strong>소명 검토 결과</strong><br>' + escape(clarificationReview.reason) + '</p>' : '') : '') +
         '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<label>사유 (거절·추가 확인 시 필수) <textarea name="reason" maxlength="1000"></textarea></label><p>' +
         Object.entries(decisions).map(([value, label]) => '<button' + (value === 'approve' ? ' class="primary"' : '') +
           ' name="action" value="' + value + '">' + label + '</button> ').join('') +
         '</p></form></section>' : '';
       const groupLinks = item.group.links;
-      const summaryCall = calls.filter(call => call.kind === 'summary' && call.group_id === groupId &&
-        call.created_at >= (record?.acted_at ?? new Date(0)) &&
-        call.created_at >= (history.at(-1)?.acted_at ?? new Date(0)) &&
-        !reviews.some(review => review.created_at > call.created_at && review.details.scope.agencies.some(id => ids.has(id)))).at(-1);
+      const summaryCalls = calls.filter(call => call.kind === 'summary' && call.group_id === groupId);
+      const summaryCall = summaryCalls.findLast(call => call.result) ?? summaryCalls.at(-1);
       const check = Object.hasOwn(summaryChecks, summaryCall?.result?.check) ? summaryChecks[summaryCall.result.check] : '';
       const aiSummary = role !== roles[2] && (open || check) ? '<section class="ai-summary"><h3>AI 근거 요약</h3>' +
         (check ? '<p>' + escape(check) + '</p>' :
           summaryCall?.finished_at ? '<p>AI 설명 없음 · 근거 표만 확인</p>' : '') +
-        (open ? '<form method="post" data-ai="summary" action="' + link({ group: groupId }) +
-          '"><button name="action" value="ai_summary">근거 요약 생성</button></form>' : '') + '</section>' : '';
+        (open && !summaryCall ? '<form hidden method="post" data-ai="summary" action="' + link({ group: groupId }) +
+          '"><button name="action" value="ai_summary">근거 요약 생성</button></form>' :
+          summaryCall && !summaryCall.finished_at ? '<p>요약 중</p>' : '') + '</section>' : '';
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
       const relatedDocs = documents.filter(row => ids.has(row.agency_id));
@@ -737,57 +753,59 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
 <div class="workspace">
 <aside class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><div><strong>Aurora</strong><span>판매장려금 관리</span></div></div><nav aria-label="업무 메뉴">${menu}</nav></aside>
 <main><header class="toolbar"><h1>${pageTitle}</h1><div class="toolbar-controls">
-<form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
+${role === '대리점' ? '' : `<form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 <input type="hidden" name="view" value="${escape(view)}">
 ${view === 'requests' && query.get('all') === '1' ? '<input type="hidden" name="all" value="1">' : ''}
-<button class="primary">적용</button></form>
+<button class="primary">적용</button></form>`}
 <span class="toolbar-role"><strong>${escape(role)}</strong><a href="${rolePageLink}">역할 바꾸기</a></span>
 ${role === '대리점' ? '' : `<details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
 <form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 업무 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></div></details>`}</div></header>
 <div class="content">${detailView ? '' : '<p class="next-task">' + nextTask + '</p>'}${caseContext.case ? '<p><a href="' +
   link({ view: role === '대리점' ? 'agency-replies' : 'requests', group: caseContext.case }) + '">요청 ' + escape(caseContext.case) + ' 상세로 돌아가기</a></p>' : ''}${content}</div>
-<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값</p></footer>
+${role === '대리점' ? '' : '<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값</p></footer>'}
 </main></div><script>
-for(const form of document.querySelectorAll('form[data-ai]')) form.addEventListener('submit',async event=>{
+document.addEventListener('submit',async event=>{
+  const form=event.target;
+  if(!form.matches('form[data-ai]')) return;
   event.preventDefault();
   const button=event.submitter;
+  if(!button) return;
   button.disabled=true;
+  const kind=form.dataset.ai;
+  const selector={summary:'.ai-summary',draft:'.ai-draft',extract:'.document-review'}[kind];
   const message=document.createElement('p');
   message.setAttribute('role','status');
-  message.textContent=form.dataset.ai==='summary'?'요약 중':'AI 요청 중 · 직접 입력 가능';
+  message.textContent=kind==='summary'?'요약 중':'AI 요청 중 · 직접 입력 가능';
   form.after(message);
   try {
     const response=await fetch(form.getAttribute('action'),{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
     if(!response.ok) throw Error();
-    if(form.dataset.ai==='summary'){
-      const page=new DOMParser().parseFromString(await response.text(),'text/html');
-      const summary=page.querySelector('.ai-summary');
-      if(!summary) throw Error();
-      const current=form.closest('.ai-summary');
-      const nextButton=summary.querySelector('form[data-ai] button');
-      if(!nextButton) throw Error();
-      current.querySelectorAll(':scope > p').forEach(node=>node.remove());
-      for(const paragraph of summary.querySelectorAll(':scope > p')) form.before(paragraph);
-      message.remove();
-      return;
+    const page=new DOMParser().parseFromString(await response.text(),'text/html');
+    const updated=page.querySelector(selector);
+    const current=form.closest(selector);
+    if(!updated||!current) throw Error();
+    if(kind==='extract'){
+      for(const field of current.querySelectorAll('input:not([type=hidden]),select')){
+        const changed=field.tagName==='SELECT' ? field.value!==(Array.from(field.options).find(option=>option.defaultSelected)??field.options[0]).value : field.value!==field.defaultValue;
+        const next=Array.from(updated.querySelectorAll('input,select')).find(candidate=>candidate.name===field.name);
+        if(changed&&next) next.value=field.value;
+      }
     }
-    message.replaceChildren();
-    const link=document.createElement('a');
-    link.href=response.url;
-    link.textContent='AI 결과 확인';
-    message.append(link);
+    if(kind==='draft'){
+      const field=current.parentElement.querySelector('textarea[name=reason]');
+      const draft=updated.querySelector('textarea[readonly]');
+      if(field&&draft&&!field.value.trim()&&current.parentElement.querySelector('button[value=send]')) field.value=draft.value;
+    }
+    current.replaceWith(updated);
   } catch {
-    if(form.dataset.ai==='summary'){
-      form.closest('.ai-summary').querySelectorAll(':scope > p').forEach(node=>node.remove());
-      const failure=document.createElement('p');
-      failure.textContent='AI 설명 없음 · 근거 표만 확인';
-      form.before(failure);
-    }else{message.textContent='AI 요청 실패, 직접 입력 또는 작성';}
+    message.textContent=kind==='summary'?'AI 설명 없음 · 근거 표만 확인':'AI 요청 실패, 직접 입력 또는 작성';
   }
   finally { button.disabled=false; }
 });
+const automaticSummary=document.querySelector('form[data-ai="summary"]');
+if(automaticSummary) automaticSummary.requestSubmit(automaticSummary.querySelector('button'));
 </script></body></html>`);
   };
 }

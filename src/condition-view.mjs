@@ -34,8 +34,9 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
   const latest = calls.filter(row => row.document_id === selected.id && row.kind === 'extract').at(-1);
   const status = latest ? latest.finished_at ? latest.result ? 'AI 추출 완료 · 후보' : 'AI 추출 실패, 직접 입력'
     : 'AI 추출 요청 중 · 직접 입력 가능' : '추출 전 · 직접 입력 가능';
-  html += '<h3>접수 ' + escape(selected.id) + ' · ' + escape(selected.agency_id) + '</h3><p>' + status + '</p>' +
-    '<form method="post" action="' + action + '" data-ai><fieldset' + disabled + '>' +
+  html += '<section class="document-review" id="document-confirmation"><h3>접수 ' +
+    escape(selected.id) + ' · ' + escape(selected.agency_id) + '</h3><p>' + status + '</p>' +
+    '<form method="post" action="' + action + '" data-ai="extract"><fieldset' + disabled + '>' +
     post('document_extract', 'AI 추출') + ' ' +
     (Object.values(documentSamples(data)).some(([, text]) => text === selected.original)
       ? post('document_timeout', '시간 초과 확인') : '') + '</fieldset></form>' +
@@ -50,11 +51,14 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
       }).join(''),
       Object.entries(fields).map(([key, label]) => {
         const result = latest?.result?.[key];
-        const value = selected.confirmed?.[key]?.value ?? (result?.needsReview === false ? result.candidates[0].value : '');
+        const confirmed = selected.confirmed?.[key];
+        const value = confirmed ? confirmed.value ?? '' : result?.needsReview === false ? result.candidates[0].value : '';
+        const labels = { reject: '반려/미확인', accept: '수락', edit: '수정/직접 입력' };
         return '<p><label>' + label + ' <input name="' + key + '" value="' + escape(value) + '" maxlength="200"></label> ' +
-          '<select aria-label="' + label + ' 판정" name="' + key + '_decision"><option value="reject">반려/미확인</option>' +
-          '<option value="accept">수락</option><option value="edit">수정/직접 입력</option></select>' +
-          (selected.confirmed?.[key] ? ' · 저장: ' + escape(selected.confirmed[key].decision) : '') + '</p>';
+          '<select aria-label="' + label + ' 판정" name="' + key + '_decision">' +
+          Object.entries(labels).map(([key, value]) => '<option value="' + key + '"' +
+            (confirmed?.decision === key ? ' selected' : '') + '>' + value + '</option>').join('') + '</select>' +
+          (confirmed ? ' · 저장: ' + labels[confirmed.decision] : '') + '</p>';
       }).join(''),
     ]]) + '<label>확인 근거 <input name="reason" maxlength="1000" required></label> ' +
     post('document_confirm', '확인 저장') + '</fieldset></form>';
@@ -63,7 +67,7 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
       post('group_confirm', '관련자 그룹 확인') +
       (selected.confirmed.bank_account_no?.value ? ' ' + post('account_apply', '확인된 계좌 변경 적용') : '') + '</form>';
   }
-  return html;
+  return html + '</section>';
 }
 
 export function aiLog(calls, escape, table, time) {
