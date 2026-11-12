@@ -93,7 +93,7 @@ details.evidence{padding:.82rem 1rem;border:1px solid var(--border);border-radiu
 .request-progress{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;padding:0;margin:0 0 1rem;list-style:none;font-size:.87rem}
 .request-progress li{color:var(--muted)}
 .request-progress li+li::before{content:"→";margin-right:.45rem;color:var(--muted)}
-.request-progress li[aria-current]{color:var(--accent);font-weight:750}
+.request-progress li[aria-current]{color:var(--accent);font-weight:750;background:var(--blue-light);border-radius:6px;padding:.2rem .45rem}
 .request-progress .not-applicable{opacity:.55}
 .case-work,.case-intake,.sample-buttons{margin-top:1rem}
 .button-group{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.55rem}
@@ -102,7 +102,11 @@ details.evidence{padding:.82rem 1rem;border:1px solid var(--border);border-radiu
 .toolbar-role{display:flex;align-items:center;gap:.55rem;padding:.45rem .7rem;border-radius:10px;background:#fff;font-size:.88rem}
 .role-entry{max-width:64rem;margin:6vh auto 0}
 .role-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:1rem;margin-top:1rem}
-.role-cards form{display:flex;flex-direction:column;align-items:flex-start;margin:0;background:#fff}
+.role-cards form{margin:0;padding:0;background:#fff;overflow:hidden}
+.role-card-button{display:flex;width:100%;height:100%;flex-direction:column;align-items:flex-start;gap:.3rem;padding:1.1rem;text-align:left;border:0;background:transparent}
+.role-card-title{font-size:1.16rem;font-weight:750;color:#182638}
+.role-card-description{font-size:.9rem;color:var(--muted)}
+.role-card-action{margin-top:.35rem;color:var(--accent);font-size:.9rem}
 .role-cards h2{margin-bottom:.45rem}
 .role-cards p{margin-bottom:1rem}
 .role-cards button{margin-top:auto}
@@ -120,8 +124,26 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   .sidebar{height:auto;z-index:1;padding:.65rem 1rem;border-right:0;border-bottom:1px solid var(--border)}
   .brand{margin:0 0 .55rem}
   .brand-mark{width:2rem;height:2rem;border-radius:9px}
-  .sidebar nav{display:flex;gap:.25rem;overflow:auto}
+  .sidebar nav{display:flex;gap:.2rem;flex-wrap:wrap;overflow:visible}
   .sidebar a{flex:none;padding:.4rem .6rem;font-size:.88rem}
   main{padding-top:1.25rem}
+  .role-entry{margin:1rem auto 0}
+  .role-cards{gap:.55rem}
+  .role-card-button{padding:.8rem 1rem;gap:.15rem}
+  .role-card-action{margin-top:.1rem}
+  .summary-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem;margin-bottom:1rem}
+  .summary-card{padding:.8rem;border-radius:12px}
+  .summary-card strong{font-size:1.35rem}
+  .summary-cards:not(.detail-cards) .summary-card:last-child{grid-column:1 / -1}
+  .detail-cards .summary-card strong{font-size:.98rem}
+  .responsive-requests{border:0;overflow:visible}
+  .responsive-requests table,.responsive-requests tbody,.responsive-requests tr,.responsive-requests td{display:block;width:100%;min-width:0}
+  .responsive-requests thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .responsive-requests tr{margin:.65rem 0;padding:.65rem .8rem;border:1px solid var(--border);border-radius:12px}
+  .responsive-requests td{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;padding:.22rem 0;border:0;text-align:right}
+  .responsive-requests td::before{content:attr(data-label);color:var(--muted);font-size:.82rem;text-align:left;flex:none}
+  .responsive-requests .executive-row{background:var(--blue-light);border-left:4px solid var(--accent)}
+  .responsive-requests .executive-row td{background:transparent;box-shadow:none}
+
 }
 `;

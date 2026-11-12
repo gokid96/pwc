@@ -31,18 +31,18 @@ const time = value => new Intl.DateTimeFormat('ko-KR', {
 }).format(value);
 const mask = account => '•••• ' + escape(account.slice(-4));
 
-function table(headers, rows, { origins = [], highlight = [] } = {}) {
+function table(headers, rows, { origins = [], highlight = [], responsive = false } = {}) {
   if (!rows.length) return '<p class="empty-state">아직 없습니다</p>';
   const columnClass = headers.map(header => /^(합계|금액|장려금)(?:\s|$)/.test(header) ? ' class="amount"' : '');
   const origin = headers.map((header, index) => origins[index] ??
     (header.endsWith(' · 원본') || header === '원본 행' || header === '원본 상태' ? '원본' :
       header.endsWith(' · 계산') ? '계산' : ''));
   const title = header => header.replace(/ · (원본|계산)$/, '').replace(/^원본 행$/, '자료 위치').replace(/^원본 상태$/, '지급 상태');
-  return '<div class="table-scroll" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
+  return '<div class="table-scroll' + (responsive ? ' responsive-requests' : '') + '" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
     headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + title(header) +
       (origin[index] ? originBadge(origin[index]) : '') + '</th>').join('') +
     '</tr></thead><tbody>' + rows.map((row, rowIndex) => (highlight[rowIndex] ? '<tr class="executive-row">' : '<tr>') + row.map((cell, index) =>
-      '<td' + columnClass[index] + '>' + cell + '</td>').join('') +
+      '<td' + columnClass[index] + (responsive ? ' data-label="' + escape(title(headers[index])) + '"' : '') + '>' + cell + '</td>').join('') +
     '</tr>').join('') + '</tbody></table></div>';
 }
 
@@ -168,8 +168,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         roles.map((name, index) => '<form class="summary-card" method="post" action="/?' +
           escape(new URLSearchParams({ ...periodQuery, view: 'roles', select: index,
             ...(historicalReview ? { after: 'historical-review' } : {}) }).toString()) +
-          '"><h2>' + name + '</h2><p>' + roleDescriptions[index] +
-          '</p><button class="primary">선택</button></form>').join('') + '</div>'));
+          '"><button class="role-card-button"><span class="role-card-title">' + name + '</span><span class="role-card-description">' + roleDescriptions[index] + '</span><span class="role-card-action">선택 →</span></button></form>').join('') + '</div>'));
     }
     const view = requestedView ?? (query.has('group') ? 'requests' : roleViews[roleIndex][0]);
     if (!roleViews[roleIndex].includes(view) && (view !== 'ai-log' || role === '대리점')) return denied();
@@ -483,7 +482,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     };
     const options = (values, selected) => values.map(value =>
       '<option' + (value === selected ? ' selected' : '') + '>' + escape(value) + '</option>').join('');
-    const members = entry => entry.group.members.map(member => escape(member.agencyId)).join(', ');
+    const agencyNames = new Map(data.agencies.map(row => [row.agency_id, row.agency_name]));
+    const members = entry => entry.group.members.map(member => escape(member.agencyId) + (agencyNames.get(member.agencyId) ? ' · ' + escape(agencyNames.get(member.agencyId)) : '')).join('<br>');
     const groupLink = entry => '<a href="' + link({ view: view === 'accounting' ? 'accounting' : 'requests', group: entry.group.groupId }) + '">' +
       escape(entry.group.groupId) + '</a>';
     let content;
@@ -731,7 +731,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           ...(bulk ? [selectable(entry) ? '<input type="checkbox" name="request" value="' + escape(entry.group.groupId) +
             '" aria-label="' + escape(entry.group.groupId) + ' 선택">' : ''] : []),
           groupLink(entry), members(entry), money(entry.totalKrw), escape(entry.approver), statusBadge(statusFor(entry)),
-        ]), { highlight: ordered.map(entry => priority(entry) < 2) });
+        ]), { highlight: ordered.map(entry => priority(entry) < 2), responsive: true });
       content = '<div class="summary-cards">' + cards.map(([label, value]) =>
         '<div class="summary-card"><p>' + label + originBadge('계산') + '</p><strong>' + value + '</strong></div>').join('') +
         '</div><h2>승인 요청 목록</h2>' + listToggle + (bulk ? '<form method="post" action="' + link({}) +
