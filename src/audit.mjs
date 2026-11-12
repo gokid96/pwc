@@ -7,17 +7,26 @@ export function validDate(value) {
 }
 export function inputMetadata(form, period) {
   const occurredOn = form.get('occurredOn');
-  const effectiveOn = form.get('effectiveOn');
+  const effectiveOn = form.get('sameEffectiveDate') === 'yes' ? occurredOn : form.get('effectiveOn');
   if (!validDate(occurredOn) || !validDate(effectiveOn) || form.get('effectivePeriod') !== period) return null;
   return { occurredOn, effectiveOn, effectivePeriod: period, source: form.get('source') === 'scenario' ? 'scenario' : 'manual' };
 }
-export function metadataFields(period, escape) {
-  return '<details class="input-provenance" open><summary>자료 출처와 적용 시점</summary>' +
+export function metadataFields(period, escape, previous, { reuseOccurred = false } = {}) {
+  const inherited = previous?.effectivePeriod === period ? previous : null;
+  return '<div class="record-fields"><label>업무 발생일 <input type="date" name="occurredOn" value="' +
+    escape(reuseOccurred ? inherited?.occurredOn ?? '' : '') + '" required></label>' +
+    '<details class="input-provenance"><summary>기록 정보 · 적용 ' + escape(period) + (inherited ? ' · 이전 정보 이어받음' : '') + '</summary>' +
     '<p class="muted">가상기업 기준일 2026-07-01 · 실제 입력 시각은 별도 기록합니다. 지정한 정산월에 즉시 반영하며 예약 적용은 하지 않습니다.</p>' +
-    '<label>자료 구분 <select name="source"><option value="manual">가상 회신 · 직접 입력</option><option value="scenario">추가 시나리오 자료</option></select></label> ' +
-    '<label>업무 발생일 <input type="date" name="occurredOn" required></label> ' +
-    '<label>적용일 <input type="date" name="effectiveOn" required></label> ' +
-    '<label>적용 정산월 <input name="effectivePeriod" value="' + escape(period) + '" readonly></label></details>';
+    '<label>자료 구분 <select name="source">' + Object.entries(sourceLabels).map(([value, label]) =>
+      '<option value="' + value + '"' + (value === (inherited?.source ?? 'manual') ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label> ' +
+    '<label><input type="checkbox" name="sameEffectiveDate" value="yes" checked> 적용일은 업무 발생일과 같음</label> ' +
+    '<label>적용일 <input type="date" name="effectiveOn" value="" disabled></label> ' +
+    '<label>적용 정산월 <input name="effectivePeriod" value="' + escape(period) + '" readonly></label></details></div>';
+}
+export function newestFirstEvents(events) {
+  return events.map((event, index) => ({ event, index })).sort((a, b) =>
+    (new Date(b.event.acted_at).getTime() || 0) - (new Date(a.event.acted_at).getTime() || 0) ||
+    b.index - a.index).map(({ event }) => event);
 }
 export function metadataView(metadata, escape) {
   if (!metadata) return '<small>기존 입력 · 출처·업무 발생일·적용일 미기록</small>';

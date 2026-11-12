@@ -11,7 +11,7 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
   const post = (name, label) => '<button' + (['document_add', 'document_confirm'].includes(name) ? ' class="primary"' : '') +
     ' name="action" value="' + name + '">' + label + '</button>';
   const disabled = canEdit ? '' : ' disabled';
-  let html = '<h2>서류 접수 목록</h2><p class="muted">텍스트 입력 또는 .txt 접수만 지원합니다. 통장 사본 등의 이미지·PDF는 받지 않으며, 확인 내용과 별도 자료 위치를 텍스트에 적어 주세요.</p>' + (canSubmit ?
+  let html = '<h2>서류 접수 목록</h2><details><summary>접수 형식 · 텍스트 / .txt</summary><p class="muted">통장 사본 등의 이미지·PDF는 받지 않으며, 확인 내용과 별도 자료 위치를 텍스트에 적어 주세요.</p></details>' + (canSubmit ?
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
     data.agencies.filter(row => row.agency_id === agency).map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
@@ -42,7 +42,7 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
     post('document_extract', 'AI 추출') + ' ' +
     (Object.values(documentSamples(data)).some(([, text]) => text === selected.original)
       ? post('document_timeout', '시간 초과 확인') : '') + '</fieldset></form>' +
-    '<form method="post" action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
+    '<form method="post" data-preserve-scroll action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
     '><legend>담당자 확인</legend>' +
     table(['서류 내용', '추출 후보 · 줄 번호', '확인 값'], [[
       '<pre>' + escape(selected.original) + '</pre>',
@@ -62,11 +62,11 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
             (confirmed?.decision === key ? ' selected' : '') + '>' + value + '</option>').join('') + '</select>' +
           (confirmed ? ' · 저장: ' + labels[confirmed.decision] : '') + '</p>';
       }).join(''),
-    ]]) + '<label>확인 근거 <input name="reason" maxlength="1000" required></label> ' +
+    ]]) + '<label>확인 근거 <input name="reason" value="' + escape(selected.confirmed?.reason ?? '') + '" maxlength="1000" required></label> ' +
     post('document_confirm', '확인 저장') + '</fieldset></form>';
   if (selected.confirmed && !selected.applied && canEdit) {
     html += '<form method="post" action="' + action + '">' +
-      metadataFields(period, escape) + post('group_confirm', '관련자 그룹 확인') +
+      metadataFields(period, escape, selected.metadata, { reuseOccurred: true }) + post('group_confirm', '관련자 그룹 확인') +
       (selected.confirmed.bank_account_no?.value ? ' ' + post('account_apply', '확인된 계좌 변경 적용') : '') + '</form>';
   }
   return html + '</section>';

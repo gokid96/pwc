@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { applyChanges, callAssistant, documentSamples, individualExceedance, isOpenPeriod, reviewScope, samples } from '../src/condition.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
+import { conditionBasis, conditionCatalog, pastExceedances, replyCriteria, validateReplyCheck } from '../src/controls.mjs';
 
 test('AI candidates require source text and flag omitted or conflicting values', async () => {
   const output = await callAssistant('extract', { text: samples.mixed[1] }, {
@@ -61,11 +62,44 @@ test('June account change preserves original data and finds earlier paid approva
   assert.equal(before.requests.filter(row => row.period === '2026-06' && row.exceedsLimit).length, 1);
 });
 
-test('approval summary accepts only checks supported by the computed evidence', async () => {
-  const input = { agencies: ['D-011'], options: ['승인', '거절', '추가 확인 요청'], allowedChecks: ['registration'] };
-  const valid = await callAssistant('summary', input, { run: async () => ({ check: 'registration' }) });
-  assert.deepEqual(valid.result, { check: 'registration' });
-  const invalid = await callAssistant('summary', input, { run: async () => ({ check: 'sharedDeposit' }) });
+test('reply check keeps only verdicts grounded in the reply and recommends a resend for unmet items', async () => {
+  const reply = '공동 납품 건의 입금을 정산 담당자 한 사람이 모아 처리했습니다. 장려금 수취계좌는 거래처별로 다릅니다. 통장 사본은 다음 주에 보내겠습니다.';
+  const output = await callAssistant('reply_check', { criteria: replyCriteria, request: '경위와 수취계좌를 알려 주세요.', reply }, {
+    run: async () => ({ items: [
+      { id: 'history', verdict: 'met', quote: '정산 담당자 한 사람이 모아 처리했습니다' },
+      { id: 'payee', verdict: 'met', quote: '거래처별 계좌번호는 하나은행 123입니다' },
+      { id: 'evidence', verdict: 'missing', quote: '통장 사본은 다음 주에 보내겠습니다.' },
+    ] }),
+  });
+  assert.deepEqual(output.result.items.map(row => row.verdict), ['met', 'unclear', 'missing']);
+  assert.equal(output.result.items[1].quote, null);
+  assert.match(output.result.items[1].note, /찾을 수 없어/);
+  assert.equal(output.result.recommendation, 'resend');
+  assert.match(output.result.draft, /거래처별 지급 수취계좌·예금주 명의 \(불명확\)/);
+  const allMet = validateReplyCheck({ items: replyCriteria.map(row => ({ id: row.id, verdict: 'met', quote: '입금을' })) }, reply);
+  assert.equal(allMet.recommendation, 'verify');
+  const invalid = await callAssistant('reply_check', { criteria: replyCriteria, request: '', reply }, {
+    run: async () => ({ items: [{ id: 'history', verdict: 'met', quote: '' }] }) });
   assert.equal(invalid.result, null);
-  assert.match(invalid.raw.error, /연결할 수 없는 확인 항목/);
+});
+
+test('condition proposals stay inside the evidence-based catalog and past exceedances come from paid support approvals', async () => {
+  const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+  const result = calculateW07(data);
+  const june = result.requests.find(row => row.period === '2026-06' && row.group.groupId === 'D-011');
+  const basis = conditionBasis(june);
+  assert.deepEqual(Object.keys(basis).sort(), ['addressProof', 'payeeProof', 'representativeProof', 'sharedAccountStatement']);
+  assert.match(basis.payeeProof, /DP-00013·DP-00014/);
+  const allowed = Object.keys(basis).map(id => ({ id, label: conditionCatalog[id], basis: basis[id] }));
+  const valid = await callAssistant('conditions', { allowed }, { run: async () => ({ conditions: ['payeeProof', 'sharedAccountStatement'] }) });
+  assert.deepEqual(valid.result, { conditions: ['payeeProof', 'sharedAccountStatement'] });
+  const outside = await callAssistant('conditions', { allowed: allowed.slice(0, 1) }, { run: async () => ({ conditions: ['addressProof'] }) });
+  assert.equal(outside.result, null);
+  const past = pastExceedances(result, data, '2026-06');
+  assert.equal(past.length, 1);
+  assert.deepEqual(past[0].members, ['D-011', 'D-024', 'D-037']);
+  assert.deepEqual(past[0].months.map(row => row.period), ['2026-01', '2026-02', '2026-03', '2026-04', '2026-05']);
+  assert.equal(past[0].rowCount, 15);
+  assert.equal(past[0].totalKrw, 22_238_349);
+  assert.ok(past[0].months.every(row => row.sources.every(source => source.row > 1)));
 });

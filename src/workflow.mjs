@@ -1,6 +1,7 @@
-import { inputMetadata, metadataFields, metadataView, paymentEvidence, summaryBasis } from './audit.mjs';
+import { inputMetadata, metadataFields, metadataView, paymentEvidence, summaryBasis, newestFirstEvents } from './audit.mjs';
 import { steps, labels, requestProgress, followupError } from './followup.mjs';
-import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope, summaryChecks } from './condition.mjs';
+import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope } from './condition.mjs';
+import { conditionBasis, conditionCatalog, confirmedConditions, pastExceedances, recommendationLabels, replyCriteria, verdictLabels } from './controls.mjs';
 import { aiLog, documentView, reviewView } from './condition-view.mjs';
 import { workspaceStyles, statusBadge, originBadge } from './workspace-view.mjs';
 import { approveSupportRequests } from './bulk-approval.mjs';
@@ -22,6 +23,7 @@ const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인
 const eventLabels = {
   document_received: '서류 접수', account_changed: '계좌 변경 적용',
   review_approve: '재검토 승인 · 보류 해제', review_reject: '재검토 거절', review_clarify: '재검토 추가 확인 요청',
+  condition_check: '승인 조건 확인', post_audit: '사후 검토 요청', post_audit_done: '사후 검토 의견',
 };
 const money = amount => new Intl.NumberFormat('ko-KR').format(amount) + '원';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
@@ -29,7 +31,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
 const source = row => row ? escape(row.file + ':' + row.row) : '—';
 const time = value => new Intl.DateTimeFormat('ko-KR', {
   timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'medium',
-}).format(value);
+}).format(new Date(value));
 const mask = account => '•••• ' + escape(account.slice(-4));
 
 function table(headers, rows, { origins = [], highlight = [], responsive = false } = {}) {
@@ -77,9 +79,9 @@ async function transaction(pool, period, work) {
   }
 }
 
-async function saveDecision(db, period, groupId, role, action, reason) {
-  await db.query(`INSERT INTO w07_decision (period, group_id, role, action, reason)
-    VALUES ($1,$2,$3,$4,$5)`, [period, groupId, role, action, reason]);
+async function saveDecision(db, period, groupId, role, action, reason, conditions = []) {
+  await db.query(`INSERT INTO w07_decision (period, group_id, role, action, reason, conditions)
+    VALUES ($1,$2,$3,$4,$5,$6)`, [period, groupId, role, action, reason, JSON.stringify(conditions)]);
   if (action === 'approve') {
     await db.query('INSERT INTO w07_accounting_task (period, group_id) VALUES ($1,$2)', [period, groupId]);
   }
@@ -99,6 +101,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         reason text NOT NULL, acted_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (period, group_id)
       )`);
+      await db.query('ALTER TABLE w07_decision ADD COLUMN IF NOT EXISTS conditions jsonb');
       await db.query(`CREATE TABLE IF NOT EXISTS w07_accounting_task (
         period text NOT NULL, group_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (period, group_id),
@@ -208,6 +211,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const progressFor = entry => entry ? requestProgress(saved.get(entry.group.groupId),
       eventsFor(entry.group.groupId), entry.exceedsLimit, latestReview(reviews, entry)) : {};
     const isAffected = entry => progressFor(entry).held;
+    const latestReplyCheck = entry => {
+      const answer = eventsFor(entry.group.groupId).findLast(event => event.action === 'reply');
+      return answer && calls.filter(call => call.kind === 'reply_check' && call.group_id === entry.group.groupId &&
+        (!call.finished_at || call.result?.replyId === String(answer.id))).at(-1);
+    };
+    const conditionsKey = entry => summaryBasis(entry, latestReview(reviews, entry),
+      eventsFor(entry.group.groupId).filter(event => !['post_audit', 'post_audit_done', 'condition_check'].includes(event.action)),
+      saved.get(entry.group.groupId));
     const retainedIds = new Set(reviews.filter(review => review.details.scope.retained.length)
       .flatMap(review => review.details.scope.agencies));
     const retained = entry => entry.group.members.some(member => retainedIds.has(member.agencyId));
@@ -262,9 +273,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const action = form.get('action');
       let reason = (form.get('reason') ?? '').trim();
       const metadata = inputMetadata(form, period);
-      if (['document_add', 'account_apply', 'group_confirm', ...Object.keys(steps)].includes(action) && !metadata)
+      if (['document_add', 'account_apply', 'group_confirm', 'condition_check', ...Object.keys(steps)].includes(action) && !metadata)
         return send(400, '업무 발생일·적용일·적용 정산월을 확인해 주세요.');
-      if (action === 'payment') {
+      if (['payment', 'condition_check'].includes(action)) {
         const evidence = paymentEvidence(form);
         if (!evidence) return send(400, '확인한 자료의 이름·위치와 수취계좌·명의 등 확인 내용을 입력해 주세요.');
         metadata.evidence = evidence;
@@ -272,8 +283,26 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       }
       if (role === '대리점' && !['document_add', 'reply'].includes(action)) return denied();
       if (!open && action !== 'reset') return send(403, '원본에 미지급 건이 없는 정산월은 조회만 할 수 있습니다.');
-      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_summary'].includes(action)) {
-        if (action === 'document_add' ? role !== '대리점' : role !== roles[0] && action !== 'ai_summary') {
+      if (['post_audit', 'post_audit_done'].includes(action)) {
+        const target = pastExceedances(original, data, period).find(entry => entry.groupId === form.get('auditGroup'));
+        if (!target) return send(404, '사후 검토 대상을 찾을 수 없습니다.');
+        if (role !== (action === 'post_audit' ? roles[0] : roles[2])) return send(403, '이 업무 역할에서는 처리할 수 없습니다.');
+        if (action === 'post_audit_done' && (!reason || reason.length > 1000)) return send(400, '검토 의견을 1~1,000자로 입력해 주세요.');
+        const error = await transaction(pool, period, async db => {
+          const { rows: existing } = await db.query(`SELECT action FROM w07_event WHERE period=$1 AND group_id=$2
+            AND action IN ('post_audit','post_audit_done') ORDER BY id`, [period, target.groupId]);
+          const last = existing.at(-1)?.action;
+          if (action === 'post_audit' ? last : last !== 'post_audit') return 409;
+          await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [period, target.groupId, role, action, action === 'post_audit'
+              ? target.months.map(month => month.period).join('·') + ' · ' + target.rowCount + '건 · ' + money(target.totalKrw) + ' · 합산 한도 초과 전결 지급'
+              : reason, { months: target.months.map(month => month.period), rows: target.rowCount, totalKrw: target.totalKrw }]);
+        });
+        if (error) return send(error, '화면을 새로 열어 사후 검토 상태를 확인해 주세요.');
+        return redirect({}, '#past-exceedance');
+      }
+      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_reply', 'ai_conditions'].includes(action)) {
+        if (action === 'document_add' ? role !== '대리점' : action === 'ai_conditions' ? role !== roles[1] : role !== roles[0]) {
           return send(403, '이 업무 역할에서는 처리할 수 없습니다.');
         }
         if (action === 'document_add') {
@@ -292,16 +321,24 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           });
           return redirect({ view: 'documents', document: id, ...caseContext });
         }
-        if (['document_extract', 'document_timeout', 'ai_draft', 'ai_summary'].includes(action)) {
-          const draft = action === 'ai_draft';
-          const summary = action === 'ai_summary';
-          const groupCall = draft || summary;
+        if (['document_extract', 'document_timeout', 'ai_draft', 'ai_reply', 'ai_conditions'].includes(action)) {
+          const kind = { ai_draft: 'draft', ai_reply: 'reply_check', ai_conditions: 'conditions' }[action] ?? 'extract';
+          const groupCall = kind !== 'extract';
+          const draft = kind === 'draft';
           const decision = rows.find(row => row.group_id === groupId);
           const state = progressFor(item).state;
-          const reviewDecision = eventsFor(groupId).findLast(event => ['review_reject', 'review_clarify'].includes(event.action));
-          if (summary ? !item : draft ? !['draft', 'received'].includes(state) : !document) {
-            return send(409, '현재 단계에서 사용할 수 없습니다.');
-          }
+          const groupEvents = eventsFor(groupId);
+          const reviewDecision = groupEvents.findLast(event => ['review_reject', 'review_clarify'].includes(event.action));
+          const sent = groupEvents.findLast(event => ['send', 'resend'].includes(event.action));
+          const answer = groupEvents.findLast(event => event.action === 'reply');
+          const allowed = item ? conditionBasis(item) : {};
+          const unavailable = {
+            draft: () => !item || state !== 'draft',
+            reply_check: () => !item || state !== 'received' || !answer,
+            conditions: () => !item || !Object.keys(allowed).length || !(item.exceedsLimit || isAffected(item)),
+            extract: () => !document,
+          }[kind]();
+          if (unavailable) return send(409, '현재 단계에서 사용할 수 없습니다.');
           const timeoutCheck = action === 'document_timeout';
           if (timeoutCheck && !Object.values(documentSamples(data)).some(([, text]) => text === document.original)) {
             return send(400, '작성 양식으로 접수한 서류만 연결을 확인할 수 있습니다.');
@@ -309,32 +346,26 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           const sharedDeposits = groupCall ? item.collectionEvidence.filter(entry =>
             new Set(entry.deposits.map(row => row.agencyId)).size > 1) : [];
           const agencyAccounts = new Map(applyChanges(data, reviews).agencies.map(row => [row.agency_id, row.bank_account_no]));
-          const differentRegisteredAccounts = sharedDeposits.some(entry => {
-            const accounts = new Set(entry.deposits.map(row => agencyAccounts.get(row.agencyId))
-              .filter(account => account && account !== 'NONE'));
-            return accounts.size > 1;
-          });
           const recipient = groupCall ? groupId : null;
           const recipientDeposits = sharedDeposits.filter(entry => entry.deposits.some(row => row.agencyId === recipient));
           const registration = agencyAccounts.get(recipient);
-          const input = groupCall ? {
+          const groupFacts = groupCall ? {
             agencies: item.group.members.map(member => member.agencyId),
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
             sharedDeposits: item.collectionEvidence.map(entry => ({
               agencies: [...new Set(entry.deposits.map(row => row.agencyId))] })),
-            ...(draft ? { reason: reviewDecision?.reason || decision?.reason || latestReview(reviews, item)?.details.reason || '',
+          } : {};
+          const input = {
+            extract: () => ({ text: document.original }),
+            reply_check: () => ({ criteria: replyCriteria, request: sent?.reason ?? '', reply: answer.reason }),
+            conditions: () => ({ ...groupFacts,
+              allowed: Object.entries(allowed).map(([id, basis]) => ({ id, label: conditionCatalog[id], basis })),
+              replyCheck: (latestReplyCheck(item)?.result?.items ?? []).map(({ id, label, verdict }) => ({ id, label, verdict })) }),
+            draft: () => ({ ...groupFacts,
+              reason: reviewDecision?.reason || decision?.reason || latestReview(reviews, item)?.details.reason || '',
               recipient: { sharedDeposit: recipientDeposits.length > 0, registrationDiffers: Boolean(registration) &&
-                registration !== 'NONE' && recipientDeposits.some(entry => entry.account !== registration) },
-            } : {
-              approver: item.approver, exceedsLimit: item.exceedsLimit, recheck: isAffected(item),
-              options: !decision && !isAffected(item) ? Object.values(decisions) : [],
-              allowedChecks: ['registration', ...(item.group.links.length ? ['relationship'] : []),
-                ...(item.group.links.some(entry => entry.matchedFields.includes('representative_name')) ? ['sameName'] : []),
-                ...(sharedDeposits.length ? ['sharedDeposit'] : []),
-                ...(differentRegisteredAccounts ? ['differentRegisteredAccounts'] : [])],
-            }),
-          } : { text: document.original };
-          const kind = summary ? 'summary' : draft ? 'draft' : 'extract';
+                registration !== 'NONE' && recipientDeposits.some(entry => entry.account !== registration) } }),
+          }[kind]();
           const callId = await transaction(pool, period, async db => {
             const keys = [period, groupCall ? null : document.id, groupCall ? groupId : null, kind];
             const pending = await db.query(`SELECT id FROM w07_ai_call WHERE period=$1
@@ -347,8 +378,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           });
           if (callId) {
             const output = await assistant(kind, input, timeoutCheck ? { timeout: 1 } : undefined);
+            const result = !output.result ? null
+              : kind === 'reply_check' ? { ...output.result, replyId: String(answer.id) }
+                : kind === 'conditions' ? { ...output.result, basis: conditionsKey(item) } : output.result;
             await pool.query('UPDATE w07_ai_call SET request=$2,raw=$3,result=$4,finished_at=now() WHERE id=$1',
-              [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), summary && output.result ? { ...output.result, basis: summaryBasis(item, latestReview(reviews, item), eventsFor(groupId), saved.get(groupId)) } : output.result]);
+              [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), result]);
           }
           return redirect(groupCall ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
         }
@@ -434,13 +468,30 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         const latest = currentEvents.at(-1);
         if (form.get('revision') !== String(latest?.id ?? '0')) return 409;
         const { state, held } = requestProgress(record, currentEvents, item.exceedsLimit, review);
+        if (action === 'condition_check') {
+          if (role !== roles[2]) return 403;
+          if (state !== 'paymentPending') return 409;
+          const condition = form.get('condition');
+          if (!(record?.conditions ?? []).includes(condition)) return 400;
+          if (confirmedConditions(record, currentEvents).has(condition)) return 409;
+          await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata)
+            VALUES ($1,$2,$3,'condition_check',$4,$5)`, [...ids, role, reason, { ...metadata, condition }]);
+          return;
+        }
+        if (action === 'payment') {
+          const confirmed = confirmedConditions(record, currentEvents);
+          if ((record?.conditions ?? []).some(condition => !confirmed.has(condition))) return 409;
+        }
         if (Object.hasOwn(decisions, action)) {
           if (role !== (held ? '영업임원' : item.approver)) return 403;
           if (reason.length > 1000 || (action !== 'approve' && !reason)) return 400;
+          const allowed = Object.keys(conditionBasis(item));
+          const conditions = action === 'approve' && role === roles[1] ? [...new Set(form.getAll('condition'))] : [];
+          if (conditions.some(condition => !allowed.includes(condition))) return 400;
           if (held) {
             if (state !== 'resubmitted') return 409;
             if (action === 'approve') {
-              if (!record) await saveDecision(db, period, groupId, role, action, reason);
+              if (!record) await saveDecision(db, period, groupId, role, action, reason, conditions);
               else if (record.action !== 'approve') {
                 await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,acted_at)
                   VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
@@ -448,13 +499,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
                   WHERE period=$1 AND group_id=$2`, [...ids, role, reason]);
                 await db.query('INSERT INTO w07_accounting_task (period,group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', ids);
               }
+              if (record) await db.query('UPDATE w07_decision SET conditions=$3 WHERE period=$1 AND group_id=$2', [...ids, JSON.stringify(conditions)]);
             }
             await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,review_id)
               VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, role, 'review_' + action, reason, review.id]);
             return;
           }
           if (record) return 409;
-          await saveDecision(db, period, groupId, role, action, reason);
+          await saveDecision(db, period, groupId, role, action, reason, conditions);
           return;
         }
         const invalid = followupError(action, state, role, reason);
@@ -464,10 +516,21 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
           await db.query('DELETE FROM w07_decision WHERE period = $1 AND group_id = $2', ids);
         }
+        let eventMetadata = metadata;
+        if (['resend', 'verify'].includes(action)) {
+          const answer = currentEvents.findLast(event => event.action === 'reply');
+          const { rows: [check] } = await db.query(`SELECT id, result FROM w07_ai_call WHERE period=$1 AND group_id=$2
+            AND kind='reply_check' AND result->>'replyId' = $3 ORDER BY id DESC LIMIT 1`, [...ids, String(answer?.id)]);
+          if (check?.result?.items) {
+            eventMetadata = { ...metadata, ai: { callId: String(check.id), recommendation: check.result.recommendation,
+              agreed: check.result.recommendation === action,
+              unmet: check.result.items.filter(entry => entry.verdict !== 'met').map(({ label, verdict }) => ({ label, verdict })) } };
+          }
+        }
         await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,review_id,agency_id,metadata)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [...ids, role, action, reason, review?.id ?? null,
-            action === 'reply' ? agency : ['send', 'resend'].includes(action) ? groupId : null, metadata]);
+            action === 'reply' ? agency : ['send', 'resend'].includes(action) ? groupId : null, eventMetadata]);
       });
       if (error) return send(error, {
         400: '필요한 내용이나 사유를 1~1,000자로 입력해 주세요.',
@@ -475,7 +538,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         409: '화면을 새로 열어 현재 처리 단계를 확인해 주세요.',
       }[error]);
       const next = new URLSearchParams({ period, view, ...(item && action !== 'reset' ? { group: groupId } : {}) });
-      response.writeHead(303, { Location: '/?' + next.toString() }).end();
+      response.writeHead(303, { Location: '/?' + next.toString() + (item && action !== 'reset' ? '#current-task' : '') }).end();
       return;
     }
 
@@ -499,6 +562,24 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const members = entry => entry.group.members.map(member => escape(member.agencyId) + (agencyNames.get(member.agencyId) ? ' · ' + escape(agencyNames.get(member.agencyId)) : '')).join('<br>');
     const groupLink = entry => '<a href="' + link({ view: view === 'accounting' ? 'accounting' : 'requests', group: entry.group.groupId }) + '">' +
       escape(entry.group.groupId) + '</a>';
+    const past = open ? pastExceedances(original, data, period) : [];
+    const pastPanel = past.length ? '<section class="past-exceedance" id="past-exceedance"><h2>과거 권한 초과 지급 · 사후 검토</h2>' + past.map(entry => {
+      const audit = eventsFor(entry.groupId).filter(event => ['post_audit', 'post_audit_done'].includes(event.action));
+      const requested = audit.find(event => event.action === 'post_audit');
+      const done = audit.findLast(event => event.action === 'post_audit_done');
+      const status = done ? '사후 검토 완료' : requested ? '회계·감사 확인 대기' : '사후 검토 미등록';
+      return '<p>' + entry.members.map(escape).join('·') + '을 합산하면 ' + entry.months.length +
+        '개월 모두 한도 200만원을 넘었지만, 거래처별로 심사되어 영업지원팀 전결로 지급됐습니다. 놓친 원인은 자료가 아니라 <strong>승인 단위</strong>입니다. 이미 지급된 금액은 되돌리지 않고 사후 검토로 넘깁니다.</p>' +
+        '<p><strong>' + entry.rowCount + '건 · ' + money(entry.totalKrw) + '</strong> ' + statusBadge(status) + '</p>' +
+        table(['정산월 · 원본', '그룹 합계 · 계산', '당시 승인 · 원본', '정책상 승인권자 · 계산', '지급일 · 원본'], entry.months.map(month => [
+          escape(month.period), money(month.paidKrw), '영업지원팀 전결 · ' + month.rows + '건', '영업임원', escape(month.paymentDates.join(', ')),
+        ])) + locations(entry.months.map(month => [month.period, month.sources])) +
+        (done ? '<p><strong>회계 검토 의견</strong> · ' + time(done.acted_at) + '<br>' + escape(done.reason) + '</p>' : '') +
+        (!requested && role === roles[0] ? '<form method="post" action="' + link({}) + '"><input type="hidden" name="auditGroup" value="' + escape(entry.groupId) +
+          '"><button class="primary" name="action" value="post_audit">사후 검토 요청 · 회계·감사</button></form>' : '') +
+        (requested && !done && role === roles[2] ? '<form method="post" action="' + link({}) + '"><input type="hidden" name="auditGroup" value="' + escape(entry.groupId) +
+          '"><label>검토 의견 <textarea name="reason" maxlength="1000" required></textarea></label> <button class="primary" name="action" value="post_audit_done">검토 의견 등록</button></form>' : '');
+    }).join('') + '</section>' : '';
     let content;
     let detailView = false;
     let nextTask = '승인 요청을 선택하세요.';
@@ -515,7 +596,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       content = aiLog(calls, escape, table, time);
     } else if (view === 'accounting' && !item) {
       nextTask = '지급 검토 작업을 선택하세요.';
-      content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태', '등록 시각'],
+      content = pastPanel + '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태', '등록 시각'],
         list.filter(entry => (!groupId || entry.group.groupId === groupId) && saved.get(entry.group.groupId)?.created_at).map(entry => [
           groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
@@ -533,12 +614,18 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       if (history.length) {
         const recipient = eventsFor(groupId).findLast(event => ['send', 'resend'].includes(event.action));
         const waiting = open && stateFor(item) === 'waiting' && recipient && ownEvent(recipient, groupId);
+        const unmet = recipient?.action === 'resend' ? recipient.metadata?.ai?.unmet ?? [] : [];
+        const guide = '<section class="reply-guide"><h4>답변에 포함할 확인 항목</h4><ul>' +
+          replyCriteria.map(criterion => '<li>' + escape(criterion.label) + '</li>').join('') + '</ul>' +
+          (unmet.length ? '<p><strong>지난 답변에서 확인되지 않은 항목</strong></p><ul>' + unmet.map(entry =>
+            '<li>' + escape(entry.label) + ' · ' + escape(verdictLabels[entry.verdict] ?? entry.verdict) + '</li>').join('') + '</ul>' : '') +
+          '<p class="muted">영업지원팀이 답변을 항목별로 확인합니다. 계좌번호·예금주 명의·자료 위치를 구체적으로 적어 주세요.</p></section>';
         content += '<h3>요청 ' + escape(groupId) + '</h3>' +
-          table(['시각', '구분', '내용'], history.map(event =>
+          table(['시각 · 최신순', '구분', '내용'], newestFirstEvents(history).map(event =>
             [time(event.acted_at), event.action === 'reply' ? '답변' : '소명 요청', escape(event.reason) + '<br>' + metadataView(event.metadata, escape)])) +
           (waiting ? '<form method="post" action="' + link({ group: groupId }) + '">' +
             '<input type="hidden" name="revision" value="' + escape(eventsFor(groupId).at(-1)?.id ?? '0') + '">' +
-            metadataFields(period, escape) + '<label>답변 내용 <textarea name="reason" maxlength="1000" required></textarea></label> ' +
+            guide + metadataFields(period, escape, history.findLast(event => event.action === 'reply')?.metadata) + '<label>답변 내용 <textarea name="reason" maxlength="1000" required></textarea></label> ' +
             '<button class="primary" name="action" value="reply">답변 제출</button></form>' : '') +
           '<p><a href="' + link({ view: 'documents', case: groupId }) + '">텍스트 서류 제출</a></p>';
       }
@@ -565,29 +652,61 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const actions = open ? Object.entries(steps).filter(([, [from]]) => from === state) : [];
       const draft = calls.filter(call => call.kind === 'draft' && call.group_id === groupId &&
         call.created_at >= (record?.acted_at ?? new Date(0)) && (!call.result || call.result.grounded)).at(-1);
-      const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0];
+      const canDraft = open && state === 'draft' && role === roles[0];
       const draftForm = canDraft ? '<section class="ai-draft"><p>요청할 증빙</p>' +
         (draft?.result ? '<ul>' + draft.result.evidence.map(value => '<li>' + escape(value) + '</li>').join('') + '</ul>'
           : draft?.finished_at ? '<p>AI 초안 생성 실패, 직접 작성</p>' : '') +
-        (draft?.result ? '<p><label>AI 요청서 초안 · 복사 후 수정 <textarea readonly>' +
-          escape(draft.result.draft) + '</textarea></label></p>' : '') +
+        (draft?.result ? '<details><summary>AI 요청서 초안</summary><textarea readonly>' +
+          escape(draft.result.draft) + '</textarea><button type="button" data-use-draft>작성란에 넣기</button></details>' : '') +
         '<form method="post" data-ai="draft" action="' + link({ group: groupId }) +
         '"><button name="action" value="ai_draft">AI 요청서 초안 제안</button></form></section>' : '';
       const sent = history.findLast(event => ['send', 'resend'].includes(event.action));
       const answer = history.findLast(event => event.action === 'reply');
-      const correspondence = (sent ? '<p><strong>보낸 요청서</strong><br>' + escape(sent.reason) + '</p>' : '') +
-        (answer ? '<p><strong>받은 답변 · 가상 회신</strong><br>' + escape(answer.reason) + '<br>' + metadataView(answer.metadata, escape) + '</p>' : '');
-      const followup = actions.length && role === actions[0][1][2]
-        ? '<h3 id="followup">후속 작업</h3>' + (state === 'received' ? correspondence : '') + draftForm +
+      const correspondence = (answer ? '<p><strong>받은 답변 · 가상 회신</strong><br>' + escape(answer.reason) +
+        '</p><details><summary>답변 기록 정보</summary>' + metadataView(answer.metadata, escape) + '</details>' : '') +
+        (sent ? '<details><summary>보낸 요청서</summary><p>' + escape(sent.reason) + '</p></details>' : '');
+      const previousMetadata = history.findLast(event => event.role === role && event.metadata)?.metadata;
+      const verdictBadge = verdict => '<span class="verdict verdict-' + escape(verdict) + '">' + escape(verdictLabels[verdict] ?? verdict) + '</span>';
+      const replyCheck = state === 'received' && role === roles[0] && answer ? latestReplyCheck(item) : null;
+      const replyResult = replyCheck?.result;
+      const replyPanel = state === 'received' && role === roles[0] && answer ? '<section class="ai-reply"><h4>AI 답변 판정 <small class="ai-mark">참고 · 결정은 담당자</small></h4>' +
+        (replyResult ? '<p class="muted">생성 ' + time(replyCheck.created_at) + ' · 기준: 확인 항목 ' + replyCriteria.length + '개 · 인용 문장은 답변 원문과 대조됨</p>' +
+          table(['확인 항목', '판정', '답변 근거'], replyResult.items.map(entry => [escape(entry.label), verdictBadge(entry.verdict),
+            entry.quote ? '“' + escape(entry.quote) + '”' : '<span class="muted">' + escape(entry.note || '근거 문장 없음') + '</span>'])) +
+          '<p>AI 의견 <strong>' + escape(recommendationLabels[replyResult.recommendation]) + '</strong>' +
+          (replyResult.recommendation === 'resend' ? ' · ' + replyResult.items.filter(entry => entry.verdict !== 'met').length + '개 항목 미충족 · 아래 작성란에 보완 요청 초안을 넣었습니다' : '') + '</p>' +
+          (replyResult.draft ? '<textarea hidden data-reply-draft>' + escape(replyResult.draft) + '</textarea>' : '')
+          : replyCheck?.finished_at ? '<p>AI 판정 실패 · 답변을 직접 검토하세요.</p>' : replyCheck ? '<p>판정 중</p>' : '') +
+        (open && !replyCheck ? '<form hidden method="post" data-ai="reply" action="' + link({ group: groupId }) +
+          '"><button name="action" value="ai_reply">AI 답변 판정</button></form>' : '') + '</section>' : '';
+      const conditionIds = record?.action === 'approve' ? record.conditions ?? [] : [];
+      const confirmed = confirmedConditions(record, history);
+      const unconfirmed = conditionIds.filter(id => !confirmed.has(id));
+      const conditionsPanel = conditionIds.length && ['paymentPending', 'paymentReady'].includes(state) ? '<section class="conditions-panel"><h3>임원 승인 조건 · ' +
+        (conditionIds.length - unconfirmed.length) + '/' + conditionIds.length + ' 확인</h3>' + conditionIds.map(id => {
+          const done = confirmed.get(id);
+          return '<div class="condition-row"><p><strong>' + escape(conditionCatalog[id] ?? id) + '</strong> ' +
+            (done ? '<span class="verdict verdict-met">확인됨</span>' : '<span class="verdict verdict-missing">미확인</span>') + '</p>' +
+            (done ? '<p class="muted">' + time(done.acted_at) + ' · 확인 자료 ' + escape(done.metadata?.evidence?.reference ?? '') + ' · ' + escape(done.reason) + '</p>'
+              : open && role === roles[2] && state === 'paymentPending' ? '<form method="post" action="' + link({ group: groupId }) + '">' + revision +
+                '<input type="hidden" name="condition" value="' + escape(id) + '">' + metadataFields(period, escape, previousMetadata) +
+                '<label>확인 자료 이름·위치 <input name="evidenceReference" maxlength="200" required></label>' +
+                '<label>확인 내용 <textarea name="evidenceFinding" maxlength="1000" required></textarea></label>' +
+                '<button class="primary" name="action" value="condition_check">조건 확인 저장</button></form>' : '') + '</div>';
+        }).join('') + '</section>' : '';
+      const paymentBlocked = state === 'paymentPending' && unconfirmed.length > 0;
+      const followup = paymentBlocked && role === roles[2] ? '<p class="next-task">남은 승인 조건 ' + unconfirmed.length + '개를 확인하면 지급 증빙을 확인할 수 있습니다.</p>'
+        : actions.length && role === actions[0][1][2]
+        ? '<section class="task-panel" id="followup"><h3>' + labels[state] + '</h3>' + (state === 'received' ? correspondence + replyPanel : '') + draftForm +
           '<form method="post" action="' + link({ group: groupId }) +
         '">' + revision + '<fieldset><legend>' + labels[state] +
-        '</legend>' + metadataFields(period, escape) + (state === 'paymentPending' ? '<p>텍스트로 접수된 자료 또는 별도 확인 자료의 위치와 확인 내용을 기록하세요. 실제 지급은 수행하지 않습니다.</p><label>확인 자료 이름·위치 <input name="evidenceReference" maxlength="200" required></label><label>수취계좌·명의 등 확인 내용 <textarea name="evidenceFinding" maxlength="1000" required></textarea></label>' : state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
-          escape(state === 'draft' && canDraft ? draft?.result?.draft : '') + '</textarea></label> ') +
+        '</legend>' + metadataFields(period, escape, previousMetadata) + (state === 'paymentPending' ? '<label>확인 자료 이름·위치 <input name="evidenceReference" maxlength="200" required></label><label>수취계좌·명의 등 확인 내용 <textarea name="evidenceFinding" maxlength="1000" required></textarea></label>' : state === 'verified' ? '' : '<label>' + (state === 'draft' ? '보낼 요청서' : '검토 근거 또는 재요청 내용') + ' <textarea name="reason" maxlength="1000" required>' +
+          escape(state === 'draft' && canDraft ? draft?.result?.draft : state === 'received' ? replyResult?.draft ?? '' : '') + '</textarea></label> ') +
         actions.map(([action, step]) => '<button name="action" value="' + action + '">' + step[3] + '</button> ').join('') +
-        '</fieldset></form>' : '';
-      const timeline = [...history, ...(record ? [record] : []),
+        '</fieldset></form></section>' : '';
+      const timeline = newestFirstEvents([...history, ...(record ? [record] : []),
         ...(record?.created_at ? [{ acted_at: record.created_at, role: '시스템', action: 'accounting',
-          reason: '승인 결과 반영' }] : [])].sort((a, b) => a.acted_at - b.acted_at);
+          reason: '승인 결과 반영' }] : [])]);
       const cards = [
         ['구성 거래처', members(item), '원본'],
         ['합계', money(item.totalKrw), '계산'],
@@ -624,7 +743,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         nextTask = enabled ? '변경 근거와 소명 답변을 검토하고 결정하세요.' : '영업임원 재검토 결정 대기';
       } else if (!held && record?.action === 'approve') {
         nextTask = state === 'paymentReady' ? '증빙 확인 완료 · 지급 실행과 은행 대사는 이 앱의 처리 범위 밖입니다.' :
-          role === roles[2] ? '지급 증빙을 확인하세요.' : '회계 지급 검토 대기';
+          role === roles[2] ? (paymentBlocked ? '임원 승인 조건을 먼저 확인하세요.' : '지급 증빙을 확인하세요.') : '회계 지급 검토 대기';
       } else if (onHold(state)) {
         const task = { draft: '소명 요청을 작성하세요', waiting: '대리점 답변을 등록하세요',
           received: '대리점 답변을 검토하세요', verified: '임원에게 재상신하세요' }[state];
@@ -635,29 +754,35 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       } else {
         nextTask = enabled ? '승인 여부를 결정하세요.' : '기록된 결정을 확인하세요.';
       }
-      const previousReason = timeline.findLast(event =>
+      const previousReason = timeline.find(event =>
         ['reject', 'clarify', 'review_reject', 'review_clarify'].includes(event.action) && event.reason);
       const clarificationReview = history.findLast(event => event.action === 'verify');
+      const allowedBasis = conditionBasis(item);
+      const showConditions = enabled && role === roles[1] && Object.keys(allowedBasis).length > 0 && (item.exceedsLimit || held);
+      const conditionCall = (() => {
+        const latest = calls.filter(call => call.kind === 'conditions' && call.group_id === groupId).at(-1);
+        return latest && (!latest.finished_at || !latest.result || latest.result.basis === conditionsKey(item)) ? latest : null;
+      })();
+      const suggested = conditionCall?.result?.conditions ?? [];
+      const conditionsSection = showConditions ? '<section class="ai-conditions"><h4>승인 조건 <small class="ai-mark">AI 제안 · 임원이 선택</small></h4>' +
+        (conditionCall?.result ? '<p class="muted">생성 ' + time(conditionCall.created_at) + ' · 소명 판정과 관련자 근거 기준 · 정해진 조건 목록에서만 제안</p>'
+          : conditionCall?.finished_at ? '<p class="muted">AI 제안 실패 · 조건을 직접 선택하세요.</p>' : conditionCall ? '<p class="muted">제안 중</p>' : '') +
+        Object.entries(allowedBasis).map(([id, basis]) => '<label class="condition-option"><input type="checkbox" name="condition" value="' + escape(id) + '"' +
+          (suggested.includes(id) ? ' checked' : '') + '><span><strong>' + escape(conditionCatalog[id]) + '</strong>' +
+          (suggested.includes(id) ? ' <small class="ai-mark">AI 제안 ' + (suggested.indexOf(id) + 1) + '</small>' : '') +
+          '<br><small class="muted">근거 · ' + escape(basis) + '</small></span></label>').join('') +
+        '<p class="muted">선택한 조건은 승인 시 회계 확인 항목이 되고, 모두 확인되기 전까지 지급 검토가 열리지 않습니다.</p></section>' : '';
+      const conditionsTrigger = showConditions && open && !conditionCall ? '<form hidden method="post" data-ai="conditions" action="' + link({ group: groupId }) +
+        '"><button name="action" value="ai_conditions">승인 조건 제안</button></form>' : '';
       const decision = enabled ? '<section class="decision-panel"><h3>결정</h3>' +
         (role === roles[1] ? (previousReason ? '<p><strong>이전 결정 사유</strong><br>' + escape(previousReason.reason) + '</p>' : '') +
           correspondence + (clarificationReview ? '<p><strong>소명 검토 결과</strong><br>' + escape(clarificationReview.reason) + '</p>' : '') : '') +
-        '<form method="post" action="' + link({ group: groupId }) +
-        '">' + revision + '<label>사유 (거절·추가 확인 시 필수) <textarea name="reason" maxlength="1000"></textarea></label><p>' +
+        conditionsTrigger + '<form method="post" action="' + link({ group: groupId }) +
+        '">' + revision + conditionsSection + '<label>사유 (거절·추가 확인 시 필수) <textarea name="reason" maxlength="1000"></textarea></label><p>' +
         Object.entries(decisions).map(([value, label]) => '<button' + (value === 'approve' ? ' class="primary"' : '') +
           ' name="action" value="' + value + '">' + label + '</button> ').join('') +
         '</p></form></section>' : '';
       const groupLinks = item.group.links;
-      const summaryCalls = calls.filter(call => call.kind === 'summary' && call.group_id === groupId);
-      const summaryCall = summaryCalls.findLast(call => call.result) ?? summaryCalls.at(-1);
-      const check = Object.hasOwn(summaryChecks, summaryCall?.result?.check) ? summaryChecks[summaryCall.result.check] : '';
-      const summaryOutdated = summaryCall?.result && summaryCall.result.basis !== summaryBasis(item, latestReview(reviews, item), history, record);
-      const aiSummary = role !== roles[2] && (open || check) ? '<section class="ai-summary"><h3>AI 검토 참고</h3>' +
-        (summaryCall ? '<p class="muted">생성 시각 ' + time(summaryCall.created_at) + ' · ' + (summaryOutdated ? '이전 근거 기준 · 이후 처리 내용은 아래 이력에서 확인하세요.' : '생성 당시의 계산 근거 기준') + '</p>' : '') +
-        (check ? '<p>' + escape(check) + '</p>' :
-          summaryCall?.finished_at ? '<p>AI 설명 없음 · 근거 표만 확인</p>' : '') +
-        (open && !summaryCall ? '<form hidden method="post" data-ai="summary" action="' + link({ group: groupId }) +
-          '"><button name="action" value="ai_summary">근거 요약 생성</button></form>' :
-          summaryCall && !summaryCall.finished_at ? '<p>요약 중</p>' : '') + '</section>' : '';
       const collectionRefs = item.collectionEvidence.flatMap(entry => [...entry.deposits, ...entry.registered]
         .map(row => [row.agencyId + (row.depositDate ? ' · ' + row.depositDate : ' · 등록 정보'), [row.source]]));
       const relatedDocs = documents.filter(row => ids.has(row.agency_id));
@@ -670,14 +795,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       ];
       const active = state === 'resubmitted' ? 1 : held ? 2 : relatedDocs.some(row => !row.confirmed) ? 3 :
         record?.created_at ? 5 : onHold(state) ? 2 : item.exceedsLimit ? 1 : 0;
-      const progress = '<p class="current-stage">현재 단계 · ' + stages[active][0] + '</p><ol class="request-progress" aria-label="처리 단계">' + stages.map(([label, applicable], index) =>
-        '<li' + (active === index ? ' aria-current="step"' : applicable ? '' : ' class="not-applicable"') + '>' + label + '</li>').join('') + '</ol>';
+      const progress = '<details class="stage-details"><summary>현재 단계 · ' + stages[active][0] + '</summary><ol class="request-progress" aria-label="처리 단계">' + stages.map(([label, applicable], index) =>
+        '<li' + (active === index ? ' aria-current="step"' : applicable ? '' : ' class="not-applicable"') + '>' + label + '</li>').join('') + '</ol></details>';
       const intake = '<form class="case-intake" method="get"><input type="hidden" name="period" value="' + escape(period) +
         '"><input type="hidden" name="view" value="documents">' +
         '<input type="hidden" name="case" value="' + escape(groupId) + '">' +
         '<label>거래처 <select name="agency">' + options([...ids], groupId) +
         '</select></label> <button>접수 서류 보기</button></form>';
-      const related = '<section class="case-work"><h3>연결 작업</h3>' +
+      const related = '<details class="case-work"' + (role === roles[0] && relatedDocs.some(row => !row.applied) ? ' open' : '') + '><summary>연결 작업 · 서류 ' + relatedDocs.length + '건 · 정보 변경 ' + relatedReviews.length + '건</summary>' +
         table(['작업', '현황'], [
           ['소명 요청', hasClarification ? (role === roles[0] ? '<a href="' + link({ group: groupId, view: 'requests' }) +
             (followup ? '#followup' : '#history') + '">' + (onHold(state) ? labels[state] : '소명 기록') + '</a>' :
@@ -689,21 +814,22 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             link({ view: 'review', case: groupId }) + '#review-' + escape(row.id) + '">' +
             escape(row.agency_id) + ' · ' + (row.kind === 'change' ? '계좌 변경' : '그룹 확인') + '</a>').join('<br>') : '재검토 필요') : '아직 없습니다'],
           ['회계 작업', record?.created_at ? statusFor(item) : '아직 없습니다'],
-        ]) + (open && role === roles[0] ? intake : '') + '</section>';
+        ]) + (open && role === roles[0] ? intake : '') + '</details>';
       content = '<h2>요청 ' + escape(groupId) + '</h2><div class="summary-cards detail-cards">' +
         cards.map(([label, value, origin]) => '<div class="summary-card"><p>' + label +
           (origin ? originBadge(origin) : '') + '</p><strong>' + value + '</strong></div>').join('') + '</div>' +
-        progress + '<p class="decision-explanation">' + escape((open ? groupReason : historicalReason) + ' ' + amountReason) + '</p>' +
+        progress + '<div id="current-task">' +
         (nextTask === statusFor(item) ? '' : '<p class="next-task">' + nextTask + '</p>') +
-        (role === roles[1] ? aiSummary + decision : decision + aiSummary) + related + followup +
+        (role === roles[1] ? decision + conditionsPanel : conditionsPanel + decision + followup) + '</div>' + related +
+        '<h3>판단 근거</h3><p class="decision-explanation">' + escape((open ? groupReason : historicalReason) + ' ' + amountReason) + '</p>' +
         evidence('관련 거래처 근거', '계산', groupLinks.length
           ? table(['거래처', '일치 항목'], groupLinks.map(entry =>
             [entry.agencyIds.map(escape).join(' ↔ '), entry.matchedFields.map(field => fields[field]).join(', ')]))
           : '<p>단독 거래처</p>',
-        item.group.members.map(member => [member.agencyId, [member.source]])) +
+        item.group.members.map(member => [member.agencyId, [member.source]]), true) +
         evidence('거래처별 장려금', '원본', table(['거래처', '금액'],
           item.rebateRows.map(row => [escape(row.agencyId), money(row.amountKrw)])),
-        item.rebateRows.map(row => [row.agencyId + ' · ' + row.rebateId, [row.source]])) +
+        item.rebateRows.map(row => [row.agencyId + ' · ' + row.rebateId, [row.source]]), true) +
         evidence('이전 정산월 지급 기록', '원본', '<p>현재 그룹 구성원 기준</p>' +
           table(['정산월', '거래처', '금액', '지급 상태', '승인자', '지급일'], historical.map(row =>
             [row.period_ym, row.agency_id, money(Number(row.rebate_amount_krw)), row.approval_status,
@@ -718,10 +844,17 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             entry.deposits.map(row => escape(row.agencyId) + ' · ' + escape(row.depositDate)).join('<br>'),
             entry.registered.map(row => escape(row.agencyId)).join('<br>'),
           ])), collectionRefs, true) +
-        '<h3 id="history">처리 이력</h3>' +
+        '<h3 id="history">처리 이력</h3><p class="muted">기록 시각 내림차순 · 최신 기록부터</p>' +
         table(['시각', '업무 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
-          eventLabels[event.action] ?? steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 등록', escape(event.reason) + (event.metadata?.evidence ? '<br>확인 자료: ' + escape(event.metadata.evidence.reference) : '') + (event.metadata || ['reply', 'document_received', 'account_changed', 'payment'].includes(event.action) ? '<br>' + metadataView(event.metadata, escape) : ''),
+          event.action === 'approve' && event.conditions?.length ? '조건부 승인' :
+            eventLabels[event.action] ?? steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 등록',
+          (event.action === 'condition_check' ? escape(conditionCatalog[event.metadata?.condition] ?? '') + ' · ' : '') + escape(event.reason) +
+            (event.conditions?.length ? '<br>승인 조건: ' + event.conditions.map(id => escape(conditionCatalog[id] ?? id)).join(', ') : '') +
+            (event.metadata?.ai ? '<br>AI 의견 ' + escape(recommendationLabels[event.metadata.ai.recommendation] ?? '') +
+              (event.metadata.ai.agreed ? ' · 담당자 결정과 같음' : ' · 담당자 결정과 다름') : '') +
+            (event.metadata?.evidence ? '<br>확인 자료: ' + escape(event.metadata.evidence.reference) : '') +
+            (event.metadata?.occurredOn || ['reply', 'document_received', 'account_changed', 'payment'].includes(event.action) ? '<br>' + metadataView(event.metadata, escape) : ''),
         ]));
     } else {
       const cards = [
@@ -749,7 +882,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         ]), { highlight: ordered.map(entry => priority(entry) < 2), responsive: true });
       content = '<div class="summary-cards">' + cards.map(([label, value]) =>
         '<div class="summary-card"><p>' + label + originBadge('계산') + '</p><strong>' + value + '</strong></div>').join('') +
-        '</div><h2>승인 요청 목록</h2>' + (role === roles[1] && !allRequests ? '<p>지금 결정할 요청 ' + ordered.length + '건</p>' : '') + listToggle + (bulk ? '<form method="post" action="' + link({}) +
+        '</div>' + pastPanel + '<h2>승인 요청 목록</h2>' + (role === roles[1] && !allRequests ? '<p>지금 결정할 요청 ' + ordered.length + '건</p>' : '') + listToggle + (bulk ? '<form method="post" action="' + link({}) +
           '" onsubmit="return confirm(\'선택한 영업지원팀 전결 건을 승인할까요?\')">' +
           '<button class="primary" name="action" value="bulk_approve">선택 건 승인</button>' + requestTable + '</form>' : requestTable);
     }
@@ -781,6 +914,33 @@ ${role === '대리점' ? '' : `<details class="settings"><summary>설정</summar
   link({ view: role === '대리점' ? 'agency-replies' : 'requests', group: caseContext.case }) + '">요청 ' + escape(caseContext.case) + ' 상세로 돌아가기</a></p>' : ''}${content}</div>
 ${role === '대리점' ? '' : '<footer class="workspace-footer"><p>원본은 제공 자료의 값 · 계산은 시스템 산출값</p></footer>'}
 </main></div><script>
+document.addEventListener('change',event=>{
+  if(event.target.name!=='sameEffectiveDate') return;
+  const field=event.target.form.elements.effectiveOn;
+  field.disabled=event.target.checked;
+  field.required=!event.target.checked;
+});
+document.addEventListener('invalid',event=>{
+  let parent=event.target.parentElement;
+  while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement;}
+},true);
+document.addEventListener('click',event=>{
+  const button=event.target.closest('[data-use-draft]');
+  if(!button)return;
+  const panel=button.closest('.task-panel');
+  const field=panel?.querySelector('textarea[name=reason]');
+  const draft=button.closest('.ai-draft').querySelector('textarea[readonly]');
+  if(field&&draft&&(!field.value.trim()||confirm('작성 중인 내용을 AI 초안으로 바꿀까요?'))){field.value=draft.value;field.focus();}
+});
+document.addEventListener('submit',event=>{
+  if(!event.target.matches('[data-preserve-scroll]'))return;
+  try{sessionStorage.setItem('document-scroll',JSON.stringify({url:location.pathname+location.search,y:scrollY}));}catch{}
+});
+try{
+  const saved=JSON.parse(sessionStorage.getItem('document-scroll')||'null');
+  sessionStorage.removeItem('document-scroll');
+  if(saved&&saved.url===location.pathname+location.search)requestAnimationFrame(()=>scrollTo(0,saved.y));
+}catch{}
 document.addEventListener('submit',async event=>{
   const form=event.target;
   if(!form.matches('form[data-ai]')) return;
@@ -789,17 +949,17 @@ document.addEventListener('submit',async event=>{
   if(!button) return;
   button.disabled=true;
   const kind=form.dataset.ai;
-  const selector={summary:'.ai-summary',draft:'.ai-draft',extract:'.document-review'}[kind];
+  const selector={reply:'.ai-reply',conditions:'.ai-conditions',draft:'.ai-draft',extract:'.document-review'}[kind];
   const message=document.createElement('p');
   message.setAttribute('role','status');
-  message.textContent=kind==='summary'?'요약 중':'AI 요청 중 · 직접 입력 가능';
+  message.textContent={reply:'AI 답변 판정 중 · 직접 검토 가능',conditions:'AI 조건 제안 중 · 직접 선택 가능'}[kind]??'AI 요청 중 · 직접 입력 가능';
   form.after(message);
   try {
     const response=await fetch(form.getAttribute('action'),{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
     if(!response.ok) throw Error();
     const page=new DOMParser().parseFromString(await response.text(),'text/html');
     const updated=page.querySelector(selector);
-    const current=form.closest(selector);
+    const current=form.closest(selector)??document.querySelector(selector);
     if(!updated||!current) throw Error();
     if(kind==='extract'){
       for(const field of current.querySelectorAll('input:not([type=hidden]),select')){
@@ -811,16 +971,21 @@ document.addEventListener('submit',async event=>{
     if(kind==='draft'){
       const field=current.parentElement.querySelector('textarea[name=reason]');
       const draft=updated.querySelector('textarea[readonly]');
-      if(field&&draft&&!field.value.trim()&&current.parentElement.querySelector('button[value=send]')) field.value=draft.value;
+      if(field&&draft&&!field.value.trim()&&current.parentElement.querySelector('button[value=send],button[value=resend]')) field.value=draft.value;
+    }
+    if(kind==='reply'){
+      const field=document.querySelector('#followup textarea[name=reason]');
+      const draft=updated.querySelector('[data-reply-draft]');
+      if(field&&draft&&!field.value.trim()) field.value=draft.value;
     }
     current.replaceWith(updated);
+    if(kind==='conditions') message.remove();
   } catch {
-    message.textContent=kind==='summary'?'AI 설명 없음 · 근거 표만 확인':'AI 요청 실패, 직접 입력 또는 작성';
+    message.textContent={reply:'AI 판정 실패 · 답변을 직접 검토하세요',conditions:'AI 제안 실패 · 조건을 직접 선택하세요'}[kind]??'AI 요청 실패, 직접 입력 또는 작성';
   }
   finally { button.disabled=false; }
 });
-const automaticSummary=document.querySelector('form[data-ai="summary"]');
-if(automaticSummary) automaticSummary.requestSubmit(automaticSummary.querySelector('button'));
+for(const automatic of document.querySelectorAll('form[data-ai="reply"],form[data-ai="conditions"]')) automatic.requestSubmit(automatic.querySelector('button'));
 </script></body></html>`);
   };
 }

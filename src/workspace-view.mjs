@@ -18,6 +18,7 @@ export function statusBadge(label) {
 export const workspaceStyles = `
 :root{color-scheme:light;--accent:#2467d6;--blue-light:#edf5ff;--border:#e5eaf0;--muted:#526074;--paper:#fff}
 *,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:#f3f5f8;color:#182638;font:16px/1.6 Inter,"Malgun Gothic",system-ui,sans-serif}
 .workspace{display:grid;grid-template-columns:15.5rem minmax(0,1fr);min-height:100vh}
 .sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;padding:2rem 1rem;background:var(--paper);border-right:1px solid var(--border)}
@@ -94,6 +95,40 @@ details.evidence{padding:.82rem 1rem;border:1px solid var(--border);border-radiu
 .current-stage{font-weight:700;color:var(--accent);margin:.5rem 0}
 .input-provenance{margin:.8rem 0;padding:.6rem;border:1px solid var(--border);border-radius:8px}
 .input-provenance label{display:inline-block;margin:.35rem}
+.record-fields{margin:.75rem 0}
+.record-fields>.input-provenance{border:0;padding:0;margin:.5rem 0;color:var(--muted);font-size:.88rem}
+.task-panel{padding:1rem 1.2rem;border:1px solid var(--border);border-radius:12px;background:#fff;margin:1rem 0}
+.task-panel h3{margin-top:0}
+.task-panel fieldset{border:0;padding:0;margin:.6rem 0}
+.task-panel legend{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.task-panel textarea,.decision-panel textarea{display:block;width:100%;min-height:5rem;margin:.4rem 0 .8rem}
+.task-panel label{display:block;margin:.5rem 0}
+.task-panel .input-provenance label{display:inline-block}
+.stage-details{color:var(--muted);font-size:.9rem;margin:.7rem 0}
+.stage-details .request-progress{margin-top:.8rem}
+.detail-cards .summary-card{padding:.8rem 1rem;box-shadow:none}
+.detail-cards .summary-card strong{font-size:1.05rem}
+.ai-summary details,.case-work{padding:.65rem 0}
+.ai-reply,.ai-conditions{margin:1rem 0;padding:1rem 1.1rem;border:1px solid #c9dcf7;border-radius:12px;background:#f5f9ff}
+.ai-reply h4,.ai-conditions h4{margin:0 0 .4rem}
+.ai-mark{display:inline-block;padding:.05rem .55rem;border:1px solid #c9dcf7;border-radius:999px;background:#fff;color:#1a4fa8;font-size:.78rem;font-weight:600}
+.verdict{display:inline-block;padding:.12rem .6rem;border-radius:999px;font-size:.82rem;font-weight:700;white-space:nowrap}
+.verdict-met{background:#e5f4ed;color:#1c6245}
+.verdict-unclear{background:#fff1d8;color:#704701}
+.verdict-missing{background:#fde4e4;color:#9b2424}
+.condition-option{display:flex;gap:.7rem;align-items:flex-start;padding:.7rem 0;border-bottom:1px solid var(--border)}
+.condition-option input{width:1.2rem;height:1.2rem;margin-top:.25rem;flex:none}
+.conditions-panel{margin:1rem 0;padding:1rem 1.2rem;border:1px solid var(--border);border-radius:14px;background:#fff}
+.conditions-panel h3{margin-top:0}
+.condition-row{padding:.6rem 0;border-top:1px solid var(--border)}
+.condition-row label{display:block;margin:.4rem 0}
+.condition-row textarea{display:block;width:100%;min-height:3.5rem}
+.past-exceedance{margin:1.2rem 0 1.6rem;padding:1.1rem 1.3rem;border:1px solid #f0c98a;border-radius:16px;background:#fffaf2}
+.past-exceedance h2{margin-top:0}
+.past-exceedance textarea{display:block;width:100%;min-height:4rem;margin:.4rem 0 .6rem}
+.reply-guide{margin:.8rem 0;padding:.8rem 1rem;border:1px solid var(--border);border-radius:12px;background:#f8faff}
+.reply-guide h4{margin:0 0 .3rem}
+#current-task,#followup,#document-confirmation{scroll-margin-top:1rem}
 .request-progress{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;padding:0;margin:0 0 1rem;list-style:none;font-size:.87rem}
 .request-progress li{color:var(--muted)}
 .request-progress li+li::before{content:"→";margin-right:.45rem;color:var(--muted)}
