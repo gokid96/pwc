@@ -3,13 +3,14 @@ import { originBadge } from './workspace-view.mjs';
 
 export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role, open }) {
   const canEdit = open && role === '영업지원팀';
-  const samples = documentSamples(data);
+  const canSubmit = open && role === '대리점';
+  const samples = canSubmit ? documentSamples(data) : {};
   const selected = documents.find(row => row.id === selectedId);
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
   const post = (name, label) => '<button name="action" value="' + name + '">' + label + '</button>';
   const disabled = canEdit ? '' : ' disabled';
-  let html = '<h2>서류 접수 목록</h2>' +
-    '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' + disabled +
+  let html = '<h2>서류 접수 목록</h2>' + (canSubmit ?
+    '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' +
     '><legend>서류 접수</legend><label>거래처 <select name="agency">' +
     data.agencies.map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
       '>' + escape(row.agency_id) + '</option>').join('') +
@@ -21,19 +22,20 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
     '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))).replace(/</g, '\\u003c') +
     ';const original=document.getElementById("document-text");' +
     'for(const button of document.querySelectorAll("[data-sample]"))button.onclick=()=>{const sample=button.dataset.sample;original.value=sampleText[sample];button.form.elements.agency.value=sample==="explanation"?"D-024":"D-011";};' +
-    'document.getElementById("text-file").onchange=async(e)=>{const f=e.target.files[0];if(f&&/\\.txt$/i.test(f.name)&&f.size<=24000)original.value=(await f.text()).slice(0,6000);};</script>' +
+    'document.getElementById("text-file").onchange=async(e)=>{const f=e.target.files[0];if(f&&/\\.txt$/i.test(f.name)&&f.size<=24000)original.value=(await f.text()).slice(0,6000);};</script>' : '') +
     table(['접수 번호', '거래처', '상태'], documents.map(row => [
       '<a href="' + link({ view: 'documents', document: row.id }) + '">' + escape(row.id) + '</a>',
       escape(row.agency_id), row.applied ? '변경 적용' : row.confirmed ? '담당자 확인' : '접수',
     ]));
   if (!selected) return html;
+  if (role === '대리점') return html + '<h3>접수 ' + escape(selected.id) + '</h3><pre>' + escape(selected.original) + '</pre>';
   const latest = calls.filter(row => row.document_id === selected.id && row.kind === 'extract').at(-1);
   const status = latest ? latest.finished_at ? latest.result ? 'AI 추출 완료 · 후보' : 'AI 추출 실패, 직접 입력'
     : 'AI 추출 요청 중 · 직접 입력 가능' : '추출 전 · 직접 입력 가능';
   html += '<h3>접수 ' + escape(selected.id) + ' · ' + escape(selected.agency_id) + '</h3><p>' + status + '</p>' +
     '<form method="post" action="' + action + '" data-ai><fieldset' + disabled + '>' +
     post('document_extract', 'AI 추출') + ' ' +
-    (Object.values(samples).some(([, text]) => text === selected.original)
+    (Object.values(documentSamples(data)).some(([, text]) => text === selected.original)
       ? post('document_timeout', '시간 초과 확인') : '') + '</fieldset></form>' +
     '<form method="post" action="' + action + '"><fieldset' + (canEdit && !selected.applied ? '' : ' disabled') +
     '><legend>담당자 확인</legend>' +

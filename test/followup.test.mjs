@@ -12,8 +12,10 @@ test('executive rejection supports an incomplete reply and a second request befo
     for (const step of ['send', 'reply', 'resend', 'reply', 'verify']) {
       const state = followupState(rejected, latest, true);
       assert.equal(followupError(step, state, '영업임원', '근거'), 403);
-      assert.equal(followupError(step, state, '영업지원팀', ''), 400);
-      assert.equal(followupError(step, state, '영업지원팀', '근거'), null);
+      const owner = step === 'reply' ? '대리점' : '영업지원팀';
+      if (step === 'reply') assert.equal(followupError(step, state, '영업지원팀', '근거'), 403);
+      assert.equal(followupError(step, state, owner, ''), 400);
+      assert.equal(followupError(step, state, owner, '근거'), null);
       latest = step;
       assert.equal(followupState(rejected, latest, true), steps[step][1]);
     }

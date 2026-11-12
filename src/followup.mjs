@@ -1,6 +1,6 @@
 export const steps = {
   send: ['draft', 'waiting', '영업지원팀', '소명 요청 모의 발송'],
-  reply: ['waiting', 'received', '영업지원팀', '모의 답변 접수'],
+  reply: ['waiting', 'received', '대리점', '모의 답변 접수'],
   resend: ['received', 'waiting', '영업지원팀', '답변 부족 · 모의 재요청'],
   verify: ['received', 'verified', '영업지원팀', '소명 확인 완료'],
   resubmit: ['verified', 'resubmitted', '영업지원팀', '임원 재상신'],
