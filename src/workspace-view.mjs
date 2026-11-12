@@ -90,6 +90,10 @@ details.evidence{padding:.82rem 1rem;border:1px solid var(--border);border-radiu
 .locations{margin:.65rem 0;color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}
 .executive-row td{background:#edf5ff;font-weight:650}
 .executive-row td:first-child{box-shadow:inset 5px 0 var(--accent)}
+.muted{color:var(--muted);font-size:.85rem}
+.current-stage{font-weight:700;color:var(--accent);margin:.5rem 0}
+.input-provenance{margin:.8rem 0;padding:.6rem;border:1px solid var(--border);border-radius:8px}
+.input-provenance label{display:inline-block;margin:.35rem}
 .request-progress{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;padding:0;margin:0 0 1rem;list-style:none;font-size:.87rem}
 .request-progress li{color:var(--muted)}
 .request-progress li+li::before{content:"→";margin-right:.45rem;color:var(--muted)}
