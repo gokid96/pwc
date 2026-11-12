@@ -33,7 +33,7 @@ function table(headers, rows, { origins = [], highlight = [] } = {}) {
   const origin = headers.map((header, index) => origins[index] ??
     (header.endsWith(' · 원본') || header === '원본 행' || header === '원본 상태' ? '원본' :
       header.endsWith(' · 계산') ? '계산' : ''));
-  const title = header => header.replace(/ · (원본|계산|모의)$/, '').replace(/^원본 행$/, '자료 위치').replace(/^원본 상태$/, '지급 상태');
+  const title = header => header.replace(/ · (원본|계산)$/, '').replace(/^원본 행$/, '자료 위치').replace(/^원본 상태$/, '지급 상태');
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="데이터 표"><table><thead><tr>' +
     headers.map((header, index) => '<th scope="col"' + columnClass[index] + '>' + title(header) +
       (origin[index] ? originBadge(origin[index]) : '') + '</th>').join('') +
@@ -248,7 +248,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           }
           const timeoutCheck = action === 'document_timeout';
           if (timeoutCheck && !Object.values(documentSamples(data)).some(([, text]) => text === document.original)) {
-            return send(400, '기본 모의 서류만 시간 초과를 확인할 수 있습니다.');
+            return send(400, '작성 양식으로 접수한 서류만 연결을 확인할 수 있습니다.');
           }
           const sharedDeposits = groupCall ? item.collectionEvidence.filter(entry =>
             new Set(entry.deposits.map(row => row.agencyId)).size > 1) : [];
@@ -426,7 +426,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       content = aiLog(calls, escape, table, time);
     } else if (view === 'accounting' && !item) {
       nextTask = '지급 검토 작업을 선택하세요.';
-      content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태 · 모의', '생성 시각 · 모의'],
+      content = '<h2>회계 지급 검토</h2>' + table(['요청 · 계산', '거래처 · 원본', '합계 · 계산', '상태', '등록 시각'],
         list.filter(entry => (!groupId || entry.group.groupId === groupId) && saved.get(entry.group.groupId)?.created_at).map(entry => [
           groupLink(entry), members(entry), money(entry.totalKrw), statusBadge(statusFor(entry)), time(saved.get(entry.group.groupId).created_at),
         ]));
@@ -452,7 +452,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       }
     } else if (view === 'followup') {
       nextTask = '소명할 요청을 선택하세요.';
-      content = '<h2>소명 요청 작업</h2>' + table(['요청 · 계산', '거래처 · 원본', '상태 · 모의'],
+      content = '<h2>소명 요청 작업</h2>' + table(['요청 · 계산', '거래처 · 원본', '상태'],
         list.filter(entry => onHold(stateFor(entry))).map(entry => [groupLink(entry), members(entry), statusBadge(statusFor(entry))]));
     } else if (item) {
       detailView = true;
@@ -473,7 +473,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const draft = calls.filter(call => call.kind === 'draft' && call.group_id === groupId &&
         call.created_at >= (record?.acted_at ?? new Date(0))).at(-1);
       const canDraft = open && ['draft', 'received'].includes(state) && role === roles[0] && !isAffected(item);
-      const draftForm = canDraft ? '<p>요청할 증빙 · 프로젝트 가정</p>' +
+      const draftForm = canDraft ? '<p>요청할 증빙</p>' +
         (draft?.result ? '<ul>' + draft.result.evidence.map(value => '<li>' + escape(value) + '</li>').join('') + '</ul>'
           : draft?.finished_at ? '<p>AI 초안 생성 실패, 직접 작성</p>' : '') +
         (draft?.result ? '<p><label>AI 요청서 초안 · 복사 후 수정 <textarea readonly>' +
@@ -485,8 +485,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         '">' + revision + '<fieldset><legend>' + labels[state] +
         '</legend>' + (state === 'verified' ? '' : '<label>내용 또는 확인 근거 <textarea name="reason" maxlength="1000" required>' +
           escape(state === 'draft' && canDraft ? draft?.result?.draft : '') + '</textarea></label> ') +
-        actions.map(([action, step]) => '<button name="action" value="' + action + '">' + step[3].replace('모의 ', '') +
-          (['send', 'resend', 'reply'].includes(action) ? originBadge('모의') : '') + '</button> ').join('') +
+        actions.map(([action, step]) => '<button name="action" value="' + action + '">' + step[3] + '</button> ').join('') +
         '</fieldset></form>' : '';
       const timeline = [...history, ...(record ? [record] : []),
         ...(record?.created_at ? [{ acted_at: record.created_at, role: '시스템', action: 'accounting',
@@ -618,8 +617,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         '<h3 id="history">처리 이력</h3>' +
         table(['시각', '업무 역할', '행동', '내용·사유'], timeline.map(event => [
           time(event.acted_at), escape(event.role),
-          (steps[event.action]?.[3].replace('모의 ', '') ?? decisions[event.action] ?? '회계 지급 검토 작업 생성') +
-            (['send', 'resend', 'reply'].includes(event.action) ? originBadge('모의') : ''), escape(event.reason),
+          steps[event.action]?.[3] ?? decisions[event.action] ?? '회계 지급 검토 작업 등록', escape(event.reason),
         ]));
     } else {
       const cards = [
@@ -663,16 +661,16 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     send(200, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${pageTitle} | 판매장려금 지급 검토</title><style>${workspaceStyles}</style></head><body>
 <div class="workspace">
-<aside class="sidebar"><p class="brand">판매장려금 지급 검토</p><nav aria-label="업무 메뉴">${menu}</nav></aside>
+<aside class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><div><strong>Aurora</strong><span>판매장려금 관리</span></div></div><nav aria-label="업무 메뉴">${menu}</nav></aside>
 <main><header class="toolbar"><h1>${pageTitle}</h1><div class="toolbar-controls">
 <form method="get" class="filters"><label>정산월 <select name="period">${options(periods, period)}</select></label>
 ${groupId ? '<input type="hidden" name="group" value="' + escape(groupId) + '"><input type="hidden" name="groupPeriod" value="' + escape(period) + '">' : ''}
 <input type="hidden" name="view" value="${escape(view)}">
 ${view === 'requests' && query.get('all') === '1' ? '<input type="hidden" name="all" value="1">' : ''}
 <button class="primary">적용</button></form>
-<span>${escape(role)} · <a href="${rolePageLink}">역할 바꾸기</a></span>
+<span class="toolbar-role"><strong>${escape(role)}</strong><a href="${rolePageLink}">역할 바꾸기</a></span>
 ${role === '대리점' ? '' : `<details class="settings"><summary>설정</summary><div class="settings-panel"><p><a href="${link({ view: 'ai-log' })}">AI 호출 기록</a></p>
-<form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 시연 기록을 초기화할까요?')">
+<form method="post" action="${link({})}" onsubmit="return confirm('이 정산월의 업무 기록을 초기화할까요?')">
 <button name="action" value="reset">정산월 초기화</button></form></div></details>`}</div></header>
 <div class="content">${detailView ? '' : '<p class="next-task">' + nextTask + '</p>'}${caseContext.case ? '<p><a href="' +
   link({ view: role === '대리점' ? 'agency-replies' : 'requests', group: caseContext.case }) + '">요청 ' + escape(caseContext.case) + ' 상세로 돌아가기</a></p>' : ''}${content}</div>

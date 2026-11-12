@@ -1,5 +1,4 @@
 import { documentSamples, fields } from './condition.mjs';
-import { originBadge } from './workspace-view.mjs';
 
 export function documentView({ data, documents, calls, selectedId, selectedAgency, link, escape, table, role, open }) {
   const canEdit = open && role === '영업지원팀';
@@ -7,7 +6,8 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
   const samples = canSubmit ? documentSamples(data) : {};
   const selected = documents.find(row => row.id === selectedId);
   const action = link({ view: 'documents', ...(selected ? { document: selected.id } : {}) });
-  const post = (name, label) => '<button name="action" value="' + name + '">' + label + '</button>';
+  const post = (name, label) => '<button' + (['document_add', 'document_confirm'].includes(name) ? ' class="primary"' : '') +
+    ' name="action" value="' + name + '">' + label + '</button>';
   const disabled = canEdit ? '' : ' disabled';
   let html = '<h2>서류 접수 목록</h2>' + (canSubmit ?
     '<form method="post" action="' + link({ view: 'documents' }) + '"><fieldset' +
@@ -15,8 +15,9 @@ export function documentView({ data, documents, calls, selectedId, selectedAgenc
     data.agencies.map(row => '<option' + (row.agency_id === (selected?.agency_id ?? selectedAgency) ? ' selected' : '') +
       '>' + escape(row.agency_id) + '</option>').join('') +
     '</select></label> <label>.txt <input type="file" id="text-file" accept=".txt,text/plain"></label>' +
-    '<div class="sample-buttons">' + Object.entries(samples).map(([id, [name]]) =>
-      '<button type="button" data-sample="' + id + '">' + name + ' · 추가 자료</button>').join(' ') + '</div>' +
+    '<div class="sample-buttons"><strong>작성 양식</strong><div class="button-group">' +
+    Object.entries(samples).map(([id, [name]]) =>
+      '<button type="button" data-sample="' + id + '">' + name + '</button>').join(' ') + '</div></div>' +
     '<p><label>서류 내용 <textarea id="document-text" name="text" maxlength="6000" required></textarea></label></p>' +
     post('document_add', '접수') + '</fieldset></form>' +
     '<script>const sampleText=' + JSON.stringify(Object.fromEntries(Object.entries(samples).map(([id, [, text]]) => [id, text]))).replace(/</g, '\\u003c') +
@@ -78,7 +79,7 @@ export function aiLog(calls, escape, table, time) {
 }
 
 export function reviewView(records, { escape, table, source, money, link }) {
-  return '<h2 id="historical-review">재검토 대상 목록</h2><p>변경 전후 연결 거래처의 이번 달 지급 검토 건과 올해 이전 승인 건을 봅니다.' + originBadge('프로젝트 가정') + '</p>' +
+  return '<h2 id="historical-review">재검토 대상 목록</h2><p>변경 전후 연결 거래처의 이번 달 지급 검토 건과 올해 이전 승인 건을 확인합니다.</p>' +
     records.map(record => {
       const scope = record.details.scope;
       const heading = record.kind === 'change' ? '계좌 변경 적용' : '관련자 그룹 확인';
