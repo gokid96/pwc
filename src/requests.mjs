@@ -135,3 +135,22 @@ export function resendText(items) {
 }
 
 export { formatLabels };
+
+// 지급 수취 계좌 계획: 지급은 등록 정산계좌로만 한다(회수·입금계좌를 지급계좌로 단정하지 않음).
+// 거래처가 답한 받을 계좌가 등록 정산계좌와 다르면 정산계좌 변경을 먼저 확인해야 한다.
+const digits = value => String(value ?? '').replace(/\D/g, '');
+export function payeePlan(entry, events, agencies) {
+  const merged = mergedAnswers(events);
+  return entry.group.members.map(({ agencyId }) => {
+    const registered = agencies.find(row => row.agency_id === agencyId)?.bank_account_no ?? '';
+    const answer = Object.values(merged[agencyId]?.items ?? {}).find(value => value?.account);
+    const status = !answer ? 'registered' : digits(answer.account).endsWith(digits(registered).slice(-6)) && digits(registered).endsWith(digits(answer.account).slice(-6)) ? 'ok' : 'mismatch';
+    return { agencyId, account: registered, claimed: answer?.account ?? null, holder: answer?.holder ?? null, status };
+  });
+}
+
+export function decisionSnapshot(entry) {
+  return { members: entry.rebateRows.map(row => ({ agencyId: row.agencyId, rebateId: row.rebateId, amountKrw: row.amountKrw,
+    source: row.source.file + ':' + row.source.row })), totalKrw: entry.totalKrw, approver: entry.approver,
+    links: entry.group.links.map(link => ({ agencies: link.agencyIds, fields: link.matchedFields })) };
+}

@@ -41,10 +41,14 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
   const answer = (dealer, values, expected) => visit(3, { action: 'reply', ...values }, {}, expected, dealer);
   async function payment() {
     await visit(2, { action: 'payment' });
-    assert.match(await visit(2), /지급 시스템 반영 완료/);
+    assert.match(await visit(2), /은행 회신 입력/);
     const event = (await pool.query("SELECT metadata FROM w07_event WHERE action='payment' ORDER BY id DESC LIMIT 1")).rows[0];
     assert.equal(event.metadata.effectivePeriod, '2026-06');
     assert.match(event.metadata.evidence.reference, /지급 배치 B-\d+ \(모의\)/);
+    assert.equal(event.metadata.payees.length, 3);
+    assert.ok(event.metadata.payees.every(row => row.status !== 'mismatch'));
+    const decision = (await pool.query("SELECT snapshot FROM w07_decision WHERE group_id='D-011'")).rows[0];
+    assert.equal(decision.snapshot.totalKrw, 3_888_097);
   }
   async function change() {
     const text = documentSamples(data).change[1];
@@ -63,7 +67,7 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
     assert.match(await visit(0), /3,888,097원/);
   }
   // 정보 부족 → 보완 요청 → 재답변 → 임원에게 다시 올리기까지의 거래처 확인 흐름
-  async function clarify({ during } = {}) {
+  async function clarify({ during, account = '국민 412-27-556311' } = {}) {
     await followup({ action: 'ai_items' });
     const proposal = (await pool.query("SELECT result FROM w07_ai_call WHERE kind='items' ORDER BY id DESC LIMIT 1")).rows[0].result;
     assert.deepEqual(proposal.items.map(row => row.id), ['sharedAccount', 'payee', 'sameRep']);
@@ -74,7 +78,7 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
     assert.equal(sent.ai.agreed, true);
     if (during) await during();
     await answer('D-099', { ans_sharedAccount: '외부' }, [403]);
-    await answer('D-011', { ans_sharedAccount: '공동 납품 정산용 계좌', acc_payee: '국민 412-27-556311', holder_payee: '금강상사11', att_payee: '통장사본.pdf',
+    await answer('D-011', { ans_sharedAccount: '공동 납품 정산용 계좌', acc_payee: account, holder_payee: '금강상사11', att_payee: '통장사본.pdf',
       yn_sameRep: '예', ans_sameRep: '대표 동일', att_sameRep: '사업자등록증.pdf' });
     await answer('D-024', { ans_sharedAccount: '잘못 입금했습니다' });
     await followup({ action: 'ai_reply' });
@@ -98,18 +102,26 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
   try {
     await visit(0);
     for (const scenario of ['normal', 'conditional', 'rejection', 'change-waiting', 'change-approved']) {
-      await visit(0, { action: 'reset' });
+      await visit(4, { action: 'reset', confirm: '2026-06 초기화' }, { view: 'catalog', group: '' });
+      if (scenario === 'normal') await visit(0, { action: 'reset' }, { group: '' }, [403]);
       if (scenario === 'normal') {
         await visit(0, [['action', 'bulk_approve'], ['request', 'D-001'], ['request', 'D-002']], { group: '' });
         await visit(2, { action: 'batch_pay' }, { group: '' });
         const batch = (await pool.query("SELECT group_id, metadata FROM w07_event WHERE action='payment' ORDER BY group_id")).rows;
         assert.deepEqual(batch.map(row => row.group_id), ['D-001', 'D-002']);
         assert.equal(batch[0].metadata.batch, batch[1].metadata.batch);
+        await visit(2, { action: 'batch_result_ok' }, { group: '' });
+        assert.equal((await pool.query("SELECT count(*) FROM w07_event WHERE action='payment_ok'")).rows[0].count, '2');
         await step(1, 'approve'); await payment(); continue;
       }
       if (scenario === 'conditional') {
         await visit(2, { action: 'post_audit_done', auditGroup: 'D-011', reason: '5개월 확인' }, { view: 'post-audit', group: '' }, [400]);
+        await visit(2, { action: 'audit_master_check', auditGroup: 'D-011', masterCheck: 'unknown', reason: '승인 당시 품의서에 등록 정보 기록 없음' }, { view: 'post-audit', group: '' });
+        assert.match(await visit(2, null, { view: 'post-audit', group: '' }), /원본에 없어 확인이 필요함/);
         await visit(2, { action: 'post_audit_done', auditGroup: 'D-011', conclusion: 'audit_report', reason: '5개월 연속 팀 승인, 감사 보고 대상' }, { view: 'post-audit', group: '' });
+        const concluded = (await pool.query("SELECT metadata FROM w07_event WHERE action='post_audit_done' ORDER BY id DESC LIMIT 1")).rows[0].metadata;
+        assert.equal(concluded.masterCheck, 'unknown');
+        await visit(2, { action: 'audit_master_check', auditGroup: 'D-011', masterCheck: 'same', reason: '늦은 확인' }, { view: 'post-audit', group: '' }, [409]);
         await visit(2, { action: 'post_audit_done', auditGroup: 'D-011', conclusion: 'closed', reason: '중복' }, { view: 'post-audit', group: '' }, [409]);
         assert.match(await visit(2, null, { view: 'post-audit', group: '' }), /결론: 감사 보고/);
         await visit(1, { action: 'ai_conditions' });
@@ -124,11 +136,22 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
           await visit(2, { action: 'condition_check', condition, evidenceReference: '은행 예금주 조회', evidenceFinding: '가상 확인 회신 ' + condition });
         }
         await payment();
+        // 모의 은행 회신: 성일상사24 반려 → 영업지원 재확인 → 반려분 재지급 → 전부 지급(대사 완료)
+        await visit(2, { action: 'payment_result', result_D_011: 'x' }, {}, [400]);
+        await visit(2, { action: 'payment_result', 'result_D-011': 'success', 'result_D-024': 'rejected', 'why_D-024': 'holder', 'result_D-037': 'success' });
+        assert.match(await visit(0), /은행이 일부 지급을 반려했어요/);
+        await visit(2, { action: 'payment' }, {}, [409]);
+        await visit(0, { action: 'payee_recheck', reason: '예금주 표기(성일상사24 → (주)성일상사24) 정정 확인' });
+        await visit(2, { action: 'payment' });
+        const repay = (await pool.query("SELECT metadata FROM w07_event WHERE action='payment' ORDER BY id DESC LIMIT 1")).rows[0].metadata;
+        assert.deepEqual(repay.repay, ['D-024']);
+        await visit(2, { action: 'payment_result', 'result_D-011': 'success', 'result_D-024': 'success', 'result_D-037': 'success' });
+        assert.match(await visit(2), /지급 완료 · 대사 끝/);
         continue;
       }
       if (scenario === 'change-approved') { await step(1, 'approve'); await payment(); await change(); }
       else { await visit(1, { action: 'reject', reason: '공동 입금계좌 경위와 실제 수취계좌 확인 필요' }); }
-      await clarify(scenario === 'change-waiting' ? { during: change } : {});
+      await clarify(scenario === 'rejection' ? { account: '국민 412-27-556310' } : scenario === 'change-waiting' ? { during: change } : {});
       assert.match(await visit(1), /재결정 대기/);
       await step(1, 'approve');
       assert.match(await visit(2), /지급 시스템 반영|지급 가능/);

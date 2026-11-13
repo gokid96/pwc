@@ -5,16 +5,22 @@ export const steps = {
   verify: ['received', 'verified', '영업지원팀', '소명 확인 완료'],
   resubmit: ['verified', 'resubmitted', '영업지원팀', '임원 재상신'],
   payment: ['paymentPending', 'paymentReady', '회계', '지급 시스템 반영'],
+  payment_ok: ['paymentReady', 'reconciled', '회계', '은행 회신 · 전부 지급'],
+  payment_returned: ['paymentReady', 'paymentReturned', '회계', '은행 회신 · 일부 반려'],
+  payee_recheck: ['paymentReturned', 'repayReady', '영업지원팀', '받는 계좌 재확인'],
 };
+const paymentStates = { payment: 'paymentReady', payment_ok: 'reconciled', payment_returned: 'paymentReturned', payee_recheck: 'repayReady' };
+const paymentState = latest => paymentStates[latest] ?? 'paymentPending';
 
 export const labels = {
   draft: '소명 요청 작성', waiting: '답변 대기', received: '답변 검토',
   verified: '확인 완료', resubmitted: '재상신 · 승인 대기',
-  paymentPending: '지급 반영 대기', paymentReady: '지급 반영 완료',
+  paymentPending: '지급 반영 대기', paymentReady: '지급 반영 · 은행 회신 대기',
+  reconciled: '지급 완료 · 대사 끝', paymentReturned: '지급 반려 · 계좌 재확인', repayReady: '재지급 대기',
 };
 
 export function followupState(record, latest, executive) {
-  if (record?.created_at) return latest === 'payment' ? 'paymentReady' : 'paymentPending';
+  if (record?.created_at) return paymentState(latest);
   if (executive && ['reject', 'clarify'].includes(record?.action)) {
     return latest === 'resubmit' ? 'draft' : steps[latest]?.[1] ?? 'draft';
   }
@@ -27,13 +33,13 @@ export function requestProgress(record, events, executive, review) {
   const matching = business.filter(event => String(event.review_id) === String(review.id));
   const latest = matching.at(-1)?.action;
   if (matching.some(event => event.action === 'review_approve')) {
-    return { state: latest === 'payment' ? 'paymentReady' : 'paymentPending', held: false };
+    return { state: paymentState(latest), held: false };
   }
   const previous = business.filter(event => event.acted_at >= (record?.acted_at ?? new Date(0))).at(-1);
   const ongoingReview = previous?.review_id && !business.some(event =>
     event.review_id === previous.review_id && event.action === 'review_approve');
   const inherited = (record?.action !== 'approve' || ongoingReview) &&
-    Object.hasOwn(steps, previous?.action) && previous.action !== 'payment'
+    Object.hasOwn(steps, previous?.action) && !Object.hasOwn(paymentStates, previous.action)
     ? previous.action : null;
   return { state: steps[latest ?? inherited]?.[1] ?? 'draft', held: true };
 }
@@ -42,7 +48,7 @@ export function followupError(action, state, role, reason) {
   if (!Object.hasOwn(steps, action)) return 400;
   const [from, , owner] = steps[action];
   if (role !== owner) return 403;
-  if (state !== from && !(action === 'reply' && state === 'received')) return 409;
-  if (action !== 'resubmit' && (!reason.trim() || reason.length > (action === 'reply' ? 3000 : 1000))) return 400;
+  if (state !== from && !(action === 'reply' && state === 'received') && !(action === 'payment' && state === 'repayReady')) return 409;
+  if (!['resubmit', 'payment_ok'].includes(action) && (!reason.trim() || reason.length > (action === 'reply' ? 3000 : 1000))) return 400;
   return null;
 }

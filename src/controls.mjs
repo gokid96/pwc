@@ -172,11 +172,29 @@ export function confirmedConditions(record, events) {
 
 export const postAuditConclusions = { closed: '정당 사유 확인 · 종결', audit_report: '감사 보고', recovery: '회수 검토' };
 
-export function postAuditCause(group, data) {
+export const masterCheckResults = { same: '당시에도 지금과 같았음', different: '당시 등록 정보가 달랐음', unknown: '확인할 수 없음' };
+
+// 원인 추정. 현재 마스터만으로는 승인 당시의 대표자·주소·계좌를 알 수 없다(W07 미해결 지점).
+// 그래서 '현재 등록 정보 기준'으로만 말하고, 당시 정보 확인 결과(masterCheck)가 있을 때만 결론을 좁힌다.
+export function postAuditCause(group, data, masterCheck) {
   const registered = group.members.map(id => data.agencies.find(row => row.agency_id === id)?.registered_date).filter(Boolean);
   const firstPaid = group.months.flatMap(month => month.paymentDates).sort()[0];
   const before = registered.length === group.members.length && registered.every(date => date < firstPaid);
-  return before
-    ? { code: 'approval_unit', text: '거래처 등록일(' + registered.sort()[0] + '~' + registered.sort().at(-1) + ')이 모두 첫 지급(' + firstPaid + ') 전이라 지급 당시에도 관련자 판정이 가능했음. 거래처별로 승인해 합산 한도가 적용되지 않음.' }
-    : { code: 'late_registration', text: '일부 거래처 등록이 첫 지급(' + firstPaid + ') 이후라 지급 당시에는 관련자 판정 근거가 부족했음.' };
+  const span = registered.sort()[0] + '~' + registered.at(-1);
+  if (masterCheck === 'same') return { code: 'approval_unit', confirmed: true,
+    text: '승인 당시에도 등록 정보가 지금과 같았음(확인됨). 자료는 있었지만 거래처별로 승인해 합산 한도가 적용되지 않음 → 원인은 승인 단위.' };
+  if (masterCheck === 'different') return { code: 'data_change', confirmed: true,
+    text: '승인 당시 등록 정보가 지금과 달랐음(확인됨). 당시 자료로는 묶음을 알기 어려웠을 수 있음 → 원인은 등록 정보 변경 관리.' };
+  return { code: before ? 'approval_unit_likely' : 'unknown', confirmed: false,
+    text: (before ? '현재 등록 정보 기준으로는 세 거래처가 첫 지급(' + firstPaid + ') 전부터 등록돼 있어(' + span + ') 묶음 대상으로 보임. '
+      : '일부 거래처가 첫 지급(' + firstPaid + ') 이후 등록됨. ') +
+      '다만 승인 당시의 대표자·주소·계좌 기록은 원본에 없어 확인이 필요함.' };
+}
+
+// 지난 지급 점검에서 감사 보고·회수 검토로 결론 난 묶음은 결론 다음 달부터 3개월 동안
+// 팀 승인 범위여도 영업임원 확인을 거친다(프로젝트 통제 · 원본 승인권한을 넓히지 않고 상향만 함).
+const monthIndex = period => Number(period.slice(0, 4)) * 12 + Number(period.slice(5, 7)) - 1;
+export function precheckGroups(auditEvents, period) {
+  return new Set(auditEvents.filter(event => event.period && ['audit_report', 'recovery'].includes(event.metadata?.conclusion) &&
+    monthIndex(period) - monthIndex(event.period) >= 1 && monthIndex(period) - monthIndex(event.period) <= 3).map(event => event.group_id));
 }

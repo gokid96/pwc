@@ -56,10 +56,28 @@ test('requests go per item to the right agencies and resends narrow to what is m
   assert.deepEqual(legacy, ['D-011']);
 });
 
-test('past breach cause is computed from registration and payment dates', () => {
+test('past breach cause stays an estimate until the master at approval time is confirmed', () => {
   const [past] = pastExceedances(result, data, '2026-06');
-  const cause = postAuditCause(past, data);
-  assert.equal(cause.code, 'approval_unit');
-  assert.match(cause.text, /2020-07-05~2022-08-12/);
-  assert.match(cause.text, /2026-02-04/);
+  const estimate = postAuditCause(past, data);
+  assert.equal(estimate.code, 'approval_unit_likely');
+  assert.equal(estimate.confirmed, false);
+  assert.match(estimate.text, /2020-07-05~2022-08-12/);
+  assert.match(estimate.text, /원본에 없어 확인이 필요함/);
+  assert.doesNotMatch(estimate.text, /판정이 가능했음/);
+  assert.equal(postAuditCause(past, data, 'same').code, 'approval_unit');
+  assert.equal(postAuditCause(past, data, 'different').code, 'data_change');
+});
+
+test('audit or recovery conclusions raise the next three months of team approvals to the executive', async () => {
+  const { precheckGroups } = await import('../src/controls.mjs');
+  const audits = [
+    { group_id: 'D-011', period: '2026-06', metadata: { conclusion: 'audit_report' } },
+    { group_id: 'D-031', period: '2026-06', metadata: { conclusion: 'closed' } },
+  ];
+  assert.deepEqual([...precheckGroups(audits, '2026-06')], []);
+  for (const month of ['2026-07', '2026-08', '2026-09']) assert.deepEqual([...precheckGroups(audits, month)], ['D-011']);
+  assert.deepEqual([...precheckGroups(audits, '2026-10')], []);
+  const { approveSupportRequests } = await import('../src/bulk-approval.mjs');
+  const request = { group: { groupId: 'D-011', members: [{ agencyId: 'D-011' }] }, approver: '영업임원', exceedsLimit: false };
+  assert.equal(await approveSupportRequests({ role: '영업지원팀', ids: ['D-011'], requests: [request], savedIds: new Set(), affected: new Set(), approve: async () => {} }), 403);
 });

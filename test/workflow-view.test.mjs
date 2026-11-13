@@ -48,7 +48,9 @@ test('support detail leads with one next step, a plain summary and acknowledgeab
   assert.match(html, /value="ack"/);
   assert.match(html, /value="dispute"/);
   assert.match(html, /장려금을 받은 계좌라고 단정하지 않아요/);
-  assert.doesNotMatch(html, /전결|상신|소명/);
+  assert.match(html, /class="src src-raw"[^>]*>원본</);
+  assert.match(html, /class="src src-calc"[^>]*>계산</);
+  assert.match(html, /표시 읽는 법/);
 });
 
 test('executive empty list and evidence-based conditions while the AI proposal runs', async () => {
@@ -82,7 +84,8 @@ test('compose screen lists catalog items with reasons and starts the AI proposal
   assert.match(html, /value="ai_items"/);
   assert.match(html, /name="item" value="payee" checked/);
   assert.match(html, /name="item" value="sameAddress">/);
-  assert.match(html, /name="dueDate"/);
+  assert.match(html, /name="dueDate" value="2026-07-08"/, '기준일 2026-07-01 + 영업일 5일');
+  assert.match(html, /name="occurredOn" value="2026-07-01"/);
   assert.match(html, /value="send"/);
 });
 
@@ -139,15 +142,36 @@ test('accounting must confirm every approval condition before payment', async ()
   ] });
   assert.match(confirmed.html, /조건 1\/1 · 지급 가능/);
   assert.match(confirmed.html, /class="primary" name="action" value="payment">/);
+  assert.match(confirmed.html, /src-mock[^>]*>모의</);
+  assert.match(confirmed.html, /가상 확인/);
+});
+
+test('payment goes only to registered settlement accounts; a different answered account blocks it', async () => {
+  const url = '/?view=accounting&period=2026-06&group=D-011';
+  const snapshot = { totalKrw: 3888097, members: [{ agencyId: 'D-011', amountKrw: 1373515, source: 'sales_rebate_payment_cv.csv:212' }] };
+  const events = [sent, reply(2, 'D-011', { payee: { account: '국민 412-27-556311', holder: '금강상사11' } })];
+  const { html } = await render({ url, role: 2, rows: [{ ...decision, snapshot }], events });
+  assert.match(html, /1곳 확인 필요/);
+  assert.match(html, /name="action" value="payment" disabled/);
+  assert.match(html, /승인 당시 기록 · 합계 3,888,097원/);
+  const blocked = await render({ url, role: 2, rows: [decision], events,
+    body: new URLSearchParams({ action: 'payment', revision: '2', ...metadata, sameEffectiveDate: 'yes' }).toString() });
+  assert.equal(blocked.status, 422);
+  const same = [sent, reply(2, 'D-011', { payee: { account: '국민 412-27-556310', holder: '금강상사11' } })];
+  const ok = await render({ url, role: 2, rows: [decision], events: same });
+  assert.match(ok.html, /모두 등록 정산계좌/);
 });
 
 test('past breaches: accounting decides one of three conclusions, others only read', async () => {
   const support = await render({ url: '/?view=post-audit&period=2026-06', role: 0 });
   assert.match(support.html, /15건, 22,238,349원/);
-  assert.match(support.html, /첫 지급\(2026-02-04\) 전이라/);
+  assert.match(support.html, /첫 지급\(2026-02-04\) 전부터 등록돼 있어/);
+  assert.match(support.html, /현재 등록일·지급일로 계산한 추정/);
   assert.doesNotMatch(support.html, /value="post_audit_done"/);
   const accounting = await render({ url: '/?view=post-audit&period=2026-06', role: 2 });
   for (const value of ['closed', 'audit_report', 'recovery']) assert.match(accounting.html, new RegExp('name="conclusion" value="' + value + '"'));
+  assert.match(accounting.html, /value="audit_master_check"/);
+  assert.match(accounting.html, /미확인 상태 결론/);
   const missing = await render({ url: '/?view=post-audit&period=2026-06', role: 2,
     body: new URLSearchParams({ action: 'post_audit_done', auditGroup: 'D-011', reason: '의견' }).toString() });
   assert.equal(missing.status, 400);
@@ -167,7 +191,8 @@ test('history is newest first and records stay collapsed with defaults', async (
   const history = html.slice(html.indexOf('id="history"'));
   assert.ok(history.indexOf('거래처 답변') < history.indexOf('거래처 확인 요청'));
   assert.match(html, /<details class="record"><summary>기록 정보/);
-  assert.match(html, /name="occurredOn" value="\d{4}-\d{2}-\d{2}" required/);
+  assert.match(html, /name="occurredOn" value="2026-07-02" required/, '가상 업무일: 마지막 기록의 업무일을 이어받음');
+  assert.match(html, /<th scope="col">기록 시각<\/th>/);
 });
 
 test('dealer documents offer a structured change request without other agencies', async () => {

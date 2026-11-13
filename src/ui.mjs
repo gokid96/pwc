@@ -100,6 +100,9 @@ form:has(input[name=decision][value=approve]:not(:checked)) [data-when=approve]{
 .bell-panel a{display:flex;gap:10px;padding:12px 16px;border-top:1px solid #eef1f5;color:#182638}
 .empty{padding:28px;text-align:center;color:#526074}
 pre.doc{white-space:pre-wrap;margin:0;font:inherit;font-size:13px;line-height:1.8;background:#fff;border:1px solid #e5eaf0;border-radius:8px;padding:16px}
+.src{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid #c9d3e0;border-radius:5px;font-size:11px;font-weight:600;color:#526074;line-height:17px;vertical-align:middle;white-space:nowrap}
+.src-raw{border-color:#9fbfe8;color:#1a4fa8}.src-calc{border-color:#b9c3d0;color:#35455a}.src-reply,.src-mock{border-style:dashed;border-color:#d8a54a;color:#7a3f00}.src-ai{border-color:#b9a6e3;color:#59438c}.src-est{border-style:dashed;border-color:#b9c3d0;color:#526074}
+.legend{font-size:12px;color:#526074;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .flash{padding:10px 14px;border-radius:10px;background:#e6f4ea;color:#1e6b34;font-size:14px}
 @media (max-width:720px){.side{max-width:none;flex-basis:100%;flex-direction:row;flex-wrap:wrap;padding:12px}.brand{margin:0 12px 0 0}.side-foot{display:none}}
 `;
@@ -111,6 +114,12 @@ export const icon = kind => ({
   wait: '<span class="ico i-wait" aria-label="대기">◷</span>',
 })[kind];
 
+const sourceTitles = { raw: '제공된 원본 자료의 값', calc: '원본으로 시스템이 계산한 값', reply: '시연용으로 입력한 거래처 회신(실제 회신 아님)',
+  mock: '실제 시스템 대신 흉내 낸 처리', ai: 'AI가 낸 후보 · 사람이 확정', est: '원본만으로는 확정할 수 없는 추정' };
+const sourceNames = { raw: '원본', calc: '계산', reply: '가상 회신', mock: '모의', ai: 'AI 제안', est: '추정' };
+export const src = (kind, label) => '<span class="src src-' + kind + '" title="' + sourceTitles[kind] + '">' + (label ?? sourceNames[kind]) + '</span>';
+export const legend = () => '<p class="legend">표시: ' + ['raw', 'calc', 'reply', 'mock', 'ai', 'est'].map(kind => src(kind) + ' ' + sourceTitles[kind].split(' · ')[0]).join(' · ') + '</p>';
+
 export const pill = (tone, text) => '<span class="pill s-' + tone + '">' + text + '</span>';
 
 export function bar(total, limit) {
@@ -118,7 +127,7 @@ export function bar(total, limit) {
   return '<div class="bar' + (over ? '' : ' ok') + '" aria-hidden="true"><i style="width:' +
     Math.round(over ? limit / total * 100 : total / limit * 100) + '%"></i></div>' +
     '<div class="line muted" style="justify-content:space-between;font-size:12px;margin-top:4px"><span>' +
-    '<span title="영업지원팀이 임원 없이 승인할 수 있는 거래처 묶음별 월 합계 한도" style="border-bottom:1px dotted #8592a6">팀 승인 한도</span> ' +
+    '<span title="영업지원팀이 임원 없이 승인할 수 있는 거래처 묶음별 월 합계 한도 (원본 정책: 영업지원팀 전결)" style="border-bottom:1px dotted #8592a6">팀 승인(전결) 한도</span> ' +
     manwon(limit) + '</span>' + (over ? '<span style="color:#a12a2a;font-weight:700">▲ ' + manwon(total - limit) + ' 초과</span>'
       : '<span>' + manwon(limit - total) + ' 남음</span>') + '</div>';
 }
@@ -133,15 +142,16 @@ export function table(headers, rows, { empty = '아직 없어요', numeric = [] 
 }
 
 // 업무 기록 정보(A05 원본·가정 구분). 기본값이 채워진 채 접혀 있어 평소엔 손대지 않아도 된다.
-export function recordFields(period, previous) {
+export const BASE_DATE = '2026-07-01';
+export function recordFields(period, previous, businessDate = BASE_DATE) {
   const inherited = previous?.effectivePeriod === period ? previous : null;
-  return '<details class="record"><summary>기록 정보 · 업무 발생일 ' + today() + ' · ' +
+  return '<details class="record"><summary>기록 정보 · 업무일 ' + escape(businessDate) + ' · ' +
     escape(sourceLabels[inherited?.source ?? 'manual']) + '</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:8px">' +
-    '<label class="field">업무 발생일 <input type="date" name="occurredOn" value="' + today() + '" required></label>' +
+    '<label class="field">업무 발생일 <input type="date" name="occurredOn" value="' + escape(businessDate) + '" required></label>' +
     '<label class="field">자료 구분 <select name="source">' + Object.entries(sourceLabels).map(([value, label]) =>
       '<option value="' + value + '"' + (value === (inherited?.source ?? 'manual') ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label>' +
     '<input type="hidden" name="sameEffectiveDate" value="yes"><input type="hidden" name="effectivePeriod" value="' + escape(period) + '">' +
-    '</div><p class="muted" style="margin-top:6px">가상기업 기준일 2026-07-01 · 적용일은 업무 발생일과 같고, 정산월 ' + escape(period) + '에 바로 반영돼요.</p></details>';
+    '</div><p class="muted" style="margin-top:6px">가상 업무일 기준(기준일 2026-07-01, 이후 기록의 마지막 업무일을 이어받음) · 적용일은 업무 발생일과 같고 정산월 ' + escape(period) + '에 바로 반영돼요. 실제 입력 시각은 기록 시각으로 따로 남아요.</p></details>';
 }
 
 export function bell(items) {
@@ -165,7 +175,7 @@ export function shell({ title, subtitle, nav, content, role, period, periods, pe
     '<span>' + escape(role) + ' · <a href="/?view=roles">역할 바꾸기</a></span></div></nav>' +
     '<main class="page"><div class="wrap' + (wide ? ' wide' : '') + '">' +
     (notifications ? '<div style="display:flex;justify-content:flex-end;margin-bottom:-8px;position:relative">' + bell(notifications) + '</div>' : '') +
-    content + '</div></main></div>' + clientScript + script + '</body></html>';
+    content + (role === '대리점' ? '' : '<details style="margin-top:8px"><summary>표시 읽는 법</summary>' + legend() + '</details>') + '</div></main></div>' + clientScript + script + '</body></html>';
 }
 
 const clientScript = `<script>
