@@ -25,6 +25,7 @@ p{margin:0}h1{margin:0;font-size:24px;letter-spacing:-.03em}h2{margin:0;font-siz
 .brand-mark{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:#2467d6;color:#fff;font-weight:800}
 .brand div strong{display:block}.brand div span{font-size:12px;color:#526074}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:10px;color:#35455a;font-weight:600}
+.nav small{display:block;font-size:11px;font-weight:500;color:#7b8798;line-height:1.2}
 .nav:hover{text-decoration:none;background:#f6f8fb}
 .nav[aria-current=page]{background:#edf5ff;color:#2467d6}
 .count{min-width:22px;padding:0 7px;border-radius:999px;background:#e8eef7;color:#35455a;font-size:12px;text-align:center;line-height:20px}
@@ -168,7 +169,7 @@ export function shell({ title, subtitle, nav, content, role, period, periods, pe
     '<title>' + escape(title) + ' | 판매장려금</title><style>' + styles + '</style></head><body><div class="app">' +
     '<nav class="side" aria-label="업무 메뉴"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><div><strong>판매장려금</strong><span>' +
     escape(subtitle) + '</span></div></div>' + nav.map(([href, label, count, current]) => '<a class="nav" href="' + href + '"' +
-      (current ? ' aria-current="page"' : '') + '>' + label + (count == null ? '' : ' <span class="count">' + count + '</span>') + '</a>').join('') +
+      (current ? ' aria-current="page"' : '') + '><span>' + label + '</span>' + (count == null ? '' : ' <span class="count">' + count + '</span>') + '</a>').join('') +
     '<div class="side-foot">' + (periods && periods.length > 1 && role !== '대리점' ? '<form method="get" class="line" style="gap:6px"><input type="hidden" name="view" value="' + escape(periodLink) + '">' +
       '<select name="period" aria-label="정산월" style="padding:6px 8px">' + periods.map(value => '<option' + (value === period ? ' selected' : '') + '>' + value + '</option>').join('') +
       '</select><button class="small">보기</button></form>' : '') +
