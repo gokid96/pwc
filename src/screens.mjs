@@ -730,6 +730,7 @@ export function dealerDocs(c, h) {
 
 export function aiLog(c, h) {
   const purposes = { items: '확인 항목 제안', reply_check: '답변 판정', extract: '서류 읽기', conditions: '승인 조건 제안', draft: '요청서 초안' };
+  const legacy = { summary: '근거 요약 (이전 기능)' };
   const filter = Object.hasOwn(purposes, c.query.get('kind')) ? c.query.get('kind') : '';
   const calls = c.calls.filter(call => !filter || call.kind === filter).slice().reverse();
   const outcome = call => {
@@ -757,7 +758,7 @@ export function aiLog(c, h) {
       const changed = Object.keys(extractFields).filter(key => doc.confirmed[key]?.decision === 'edit').length;
       return changed ? ['warn', changed + '개 값 고침'] : ['ok', '수락'];
     }
-    return ['ok', '완료'];
+    return ['wait', '이전 기능 기록'];
   };
   const summary = call => {
     const r = call.result;
@@ -768,7 +769,7 @@ export function aiLog(c, h) {
     if (call.kind === 'extract') return Object.entries(extractFields).map(([key, label]) => r[key]?.candidates?.[0] ? label + ' ' + escape(key === 'bank_account_no' ? '••' + r[key].candidates[0].value.slice(-4) : r[key].candidates[0].value) : null).filter(Boolean).join(' · ');
     return '완료';
   };
-  const counts = calls.reduce((acc, call) => { const [tone] = outcome(call); acc[tone] = (acc[tone] ?? 0) + 1; return acc; }, {});
+  const counts = calls.filter(call => purposes[call.kind]).reduce((acc, call) => { const [tone] = outcome(call); acc[tone] = (acc[tone] ?? 0) + 1; return acc; }, {});
   return '<div><h1>AI 사용 기록</h1><p class="muted" style="font-size:14px;margin-top:4px">AI 결과와 사람 결정이 다른 건을 먼저 확인하세요</p></div>' +
     '<div class="stats"><div class="stat"><span>호출</span><strong>' + calls.length + '</strong></div><div class="stat"><span>사람이 따름</span><strong>' + (counts.ok ?? 0) + '</strong></div>' +
     '<div class="stat"><span>사람이 바꿈</span><strong>' + (counts.warn ?? 0) + '</strong></div><div class="stat"><span>실패</span><strong>' + (counts.no ?? 0) + '</strong></div></div>' +
@@ -777,7 +778,7 @@ export function aiLog(c, h) {
     '<section class="card">' + table(['시각', '용도', '대상', 'AI 결과', '사람 결정'], calls.map(call => {
       const [tone, text] = outcome(call);
       const target = call.group_id ? escape(h.name(call.group_id)) + (c.list.find(entry => entry.group.groupId === call.group_id)?.group.members.length > 1 ? ' 외' : '') : '서류 ' + escape(call.document_id);
-      return [time(call.created_at) + '<br><span class="muted">' + escape(call.period) + '</span>', escape(purposes[call.kind] ?? call.kind), target,
+      return [time(call.created_at) + '<br><span class="muted">' + escape(call.period) + '</span>', escape(purposes[call.kind] ?? legacy[call.kind] ?? call.kind), target,
         summary(call) + '<details><summary>보낸 내용·응답 원문</summary><pre class="doc" style="font-size:12px">' + escape(JSON.stringify({ request: call.request, response: call.raw }, null, 2)).slice(0, 6000) + '</pre></details>',
         '<span class="line">' + icon(tone) + escape(text) + '</span>'];
     }), { empty: 'AI 호출 기록이 없어요' }) + '<p class="muted" style="margin-top:8px">AI 결과는 코드가 허용 목록·원문 인용으로 다시 검사한 뒤에만 화면에 써요.</p></section>';
