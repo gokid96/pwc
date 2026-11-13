@@ -71,11 +71,11 @@ test('reply check keeps only verdicts grounded in the reply and recommends a res
       { id: 'evidence', verdict: 'missing', quote: '통장 사본은 다음 주에 보내겠습니다.' },
     ] }),
   });
-  assert.deepEqual(output.result.items.map(row => row.verdict), ['met', 'unclear', 'missing']);
+  assert.deepEqual(output.result.items.map(row => row.verdict), ['met', 'partial', 'missing']);
   assert.equal(output.result.items[1].quote, null);
   assert.match(output.result.items[1].note, /찾을 수 없어/);
   assert.equal(output.result.recommendation, 'resend');
-  assert.match(output.result.draft, /거래처별 지급 수취계좌·예금주 명의 \(불명확\)/);
+  assert.match(output.result.draft, /거래처별 지급 수취계좌·예금주 명의 \(부분\)/);
   const allMet = validateReplyCheck({ items: replyCriteria.map(row => ({ id: row.id, verdict: 'met', quote: '입금을' })) }, reply);
   assert.equal(allMet.recommendation, 'verify');
   const invalid = await callAssistant('reply_check', { criteria: replyCriteria, request: '', reply }, {

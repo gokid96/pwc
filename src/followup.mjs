@@ -4,13 +4,13 @@ export const steps = {
   resend: ['received', 'waiting', '영업지원팀', '보완 요청 등록'],
   verify: ['received', 'verified', '영업지원팀', '소명 확인 완료'],
   resubmit: ['verified', 'resubmitted', '영업지원팀', '임원 재상신'],
-  payment: ['paymentPending', 'paymentReady', '회계', '지급 증빙 확인'],
+  payment: ['paymentPending', 'paymentReady', '회계', '지급 시스템 반영'],
 };
 
 export const labels = {
   draft: '소명 요청 작성', waiting: '답변 대기', received: '답변 검토',
   verified: '확인 완료', resubmitted: '재상신 · 승인 대기',
-  paymentPending: '확인 대기', paymentReady: '지급 검토 가능',
+  paymentPending: '지급 반영 대기', paymentReady: '지급 반영 완료',
 };
 
 export function followupState(record, latest, executive) {
@@ -42,7 +42,7 @@ export function followupError(action, state, role, reason) {
   if (!Object.hasOwn(steps, action)) return 400;
   const [from, , owner] = steps[action];
   if (role !== owner) return 403;
-  if (state !== from) return 409;
-  if (action !== 'resubmit' && (!reason.trim() || reason.length > 1000)) return 400;
+  if (state !== from && !(action === 'reply' && state === 'received')) return 409;
+  if (action !== 'resubmit' && (!reason.trim() || reason.length > (action === 'reply' ? 3000 : 1000))) return 400;
   return null;
 }

@@ -5,139 +5,188 @@ import { fileURLToPath } from 'node:url';
 import { createWorkflow } from '../src/workflow.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
-async function render({ url, role = 1, rows = [], events = [], documents = [], calls = [], reviews = [], body }) {
+async function render({ url, role = 1, rows = [], events = [], documents = [], calls = [], reviews = [], catalog = [], body, dealer = 'D-011' }) {
   const db = { release() {}, async query(sql) {
     const items = /^SELECT/.test(sql) ? sql.includes('w07_review') ? reviews : sql.includes('w07_decision') ? rows :
-      sql.includes('w07_event') ? events : sql.includes('w07_document') ? documents : sql.includes('w07_ai_call') ? calls : [] : [];
+      sql.includes('w07_event') ? events : sql.includes('w07_document') ? documents : sql.includes('w07_ai_call') ? calls :
+        sql.includes('w07_catalog') ? catalog : [] : [];
     return { rows: items, rowCount: items.length };
   } };
   const workflow = createWorkflow({ connect: async () => db, query: db.query }, async () => data, calculateW07,
     async () => { throw Error('AI must not run in view tests'); });
   let html, status;
   const request = Readable.from(body ? [Buffer.from(body)] : []);
-  Object.assign(request, { url, method: body ? 'POST' : 'GET', headers: { cookie: 'w07_role=' + role + '; w07_dealer=D-011' } });
+  Object.assign(request, { url, method: body ? 'POST' : 'GET', headers: { cookie: 'w07_role=' + role + '; w07_dealer=' + dealer } });
   await workflow(request, { writeHead(code) { status = code; return this; }, end(text) { html = text; } });
   return { html, status };
 }
+const metadata = { occurredOn: '2026-07-02', effectiveOn: '2026-07-02', effectivePeriod: '2026-06', source: 'manual' };
 const decision = { group_id: 'D-011', role: '영업임원', action: 'approve', reason: '', acted_at: new Date('2026-07-01'), created_at: new Date('2026-07-01') };
-test('executive empty list distinguishes total scope from actionable work', async () => {
-  const { html } = await render({ url: '/?view=requests&period=2026-06', rows: [decision] });
-  assert.match(html, /이번 달 임원 대상 전체/);
-  assert.match(html, /지금 결정할 요청 0건/);
-  assert.match(html, /현재 결정할 요청이 없습니다/);
+const rejected = { ...decision, action: 'reject', created_at: null, reason: '공동 입금계좌 경위와 실제 수취계좌가 확인되지 않음' };
+const items = [
+  { id: 'sharedAccount', label: '공동 입금계좌를 함께 쓴 이유', format: 'text', attachment: '', recipients: ['D-011', 'D-024', 'D-037'] },
+  { id: 'payee', label: '장려금 받을 계좌와 예금주', format: 'account', attachment: '통장 사본', recipients: ['D-011', 'D-024', 'D-037'] },
+];
+const sent = { id: 1, group_id: 'D-011', role: '영업지원팀', action: 'send', reason: '확인 항목: 1) 공동 2) 계좌 · 기한 2026-07-08',
+  acted_at: new Date('2026-07-02'), metadata: { ...metadata, items, dueDate: '2026-07-08' } };
+const reply = (id, agency, answers, at = '2026-07-03') => ({ id, group_id: 'D-011', role: '대리점', action: 'reply', agency_id: agency,
+  reason: '답변', acted_at: new Date(at), metadata: { ...metadata, answers } });
+
+test('role entry offers five roles including the administrator', async () => {
+  const { html } = await render({ url: '/?view=roles' });
+  for (const name of ['영업지원팀', '영업임원', '회계', '대리점', '관리자']) assert.match(html, new RegExp('<strong>' + name + '</strong>'));
 });
-test('executive chooses among evidence-based conditions while the AI proposal runs', async () => {
+
+test('support detail leads with one next step, a plain summary and acknowledgeable checks', async () => {
+  const { html } = await render({ url: '/?view=requests&period=2026-06&group=D-011', role: 0 });
+  assert.ok(html.indexOf('다음 단계') < html.indexOf('3곳을 한 거래처로 보고 합산했어요'));
+  assert.match(html, /영업임원이 결정할 차례예요/);
+  assert.match(html, /value="remind"/);
+  assert.match(html, /각각은 한도 안이지만 합치면 넘어서/);
+  assert.match(html, /188만원 초과/);
+  assert.match(html, /성일상사24가 다른 곳 계좌로 2번 입금했어요/);
+  assert.match(html, /value="ack"/);
+  assert.match(html, /value="dispute"/);
+  assert.match(html, /장려금을 받은 계좌라고 단정하지 않아요/);
+  assert.doesNotMatch(html, /전결|상신|소명/);
+});
+
+test('executive empty list and evidence-based conditions while the AI proposal runs', async () => {
+  const empty = await render({ url: '/?view=requests&period=2026-06', rows: [decision] });
+  assert.match(empty.html, /지금 결정할 요청이 없어요/);
   const pending = await render({ url: '/?view=requests&period=2026-06&group=D-011', calls: [
     { kind: 'conditions', group_id: 'D-011', created_at: new Date('2026-07-01'), finished_at: null, result: null },
   ] });
-  assert.match(pending.html, /제안 중/);
+  assert.match(pending.html, /AI가 고르는 중/);
   assert.equal((pending.html.match(/name="condition"/g) ?? []).length, 4);
   assert.match(pending.html, /DP-00013·DP-00014/);
-  assert.doesNotMatch(pending.html, /<form hidden method="post" data-ai="conditions"/);
+  assert.doesNotMatch(pending.html, /data-ai data-auto/);
   const fresh = await render({ url: '/?view=requests&period=2026-06&group=D-011' });
-  assert.match(fresh.html, /<form hidden method="post" data-ai="conditions"/);
-  assert.doesNotMatch(fresh.html, /AI 검토 참고/);
+  assert.match(fresh.html, /value="ai_conditions"/);
+  assert.match(fresh.html, /data-ai data-auto/);
+  assert.match(fresh.html, /name="decision" value="approve" checked/);
 });
 
-test('support reviews a reply with grounded AI verdicts and a prefilled resend draft', async () => {
-  const metadata = { occurredOn: '2026-07-02', effectiveOn: '2026-07-02', effectivePeriod: '2026-06', source: 'manual' };
-  const { html } = await render({ url: '/?view=requests&period=2026-06&group=D-011', role: 0,
-    rows: [{ ...decision, action: 'reject', created_at: null, reason: '수취 명의 확인 필요' }], events: [
-      { id: 1, group_id: 'D-011', role: '영업지원팀', action: 'send', reason: '경위와 수취계좌', acted_at: new Date('2026-07-02'), metadata },
-      { id: 2, group_id: 'D-011', role: '대리점', action: 'reply', reason: '같은 계좌를 사용했습니다.', acted_at: new Date('2026-07-03'), metadata },
-    ], calls: [{ kind: 'reply_check', group_id: 'D-011', created_at: new Date('2026-07-03'), finished_at: new Date('2026-07-03'), result: {
-      replyId: '2', recommendation: 'resend', draft: '보완 초안 문장', items: [
-        { id: 'history', label: '공동 입금계좌·등록정보 공유 경위', verdict: 'unclear', quote: '같은 계좌를 사용했습니다.' },
-        { id: 'payee', label: '거래처별 지급 수취계좌·예금주 명의', verdict: 'missing', quote: null, note: '' },
-        { id: 'evidence', label: '요청한 증빙 제출 또는 제출 위치', verdict: 'missing', quote: null, note: '' },
-      ] } }] });
-  assert.match(html, /AI 답변 판정/);
-  assert.match(html, /verdict-unclear/);
-  assert.match(html, /“같은 계좌를 사용했습니다.”/);
-  assert.match(html, /AI 의견 <strong>보완 요청<\/strong>/);
-  assert.match(html, /<textarea name="reason" maxlength="1000" required>보완 초안 문장<\/textarea>/);
-  assert.doesNotMatch(html, /<form hidden method="post" data-ai="reply"/);
-  assert.doesNotMatch(html, /AI 요청서 초안 제안/);
-});
-
-test('accounting must confirm every approval condition before payment evidence', async () => {
-  const conditional = { ...decision, conditions: ['payeeProof'] };
-  const { html } = await render({ url: '/?view=accounting&period=2026-06&group=D-011', role: 2, rows: [conditional] });
-  assert.match(html, /임원 승인 조건 · 0\/1 확인/);
-  assert.match(html, /value="condition_check"/);
-  assert.match(html, /남은 승인 조건 1개를 확인하면/);
-  assert.doesNotMatch(html, /value="payment"/);
-  const blocked = await render({ url: '/?view=accounting&period=2026-06&group=D-011', role: 2, rows: [conditional],
-    body: new URLSearchParams({ action: 'payment', revision: '0', occurredOn: '2026-07-05', sameEffectiveDate: 'yes', effectivePeriod: '2026-06',
-      evidenceReference: '확인서', evidenceFinding: '확인 내용' }).toString() });
-  assert.equal(blocked.status, 409);
-  const confirmed = await render({ url: '/?view=accounting&period=2026-06&group=D-011', role: 2, rows: [conditional], events: [
-    { id: 3, group_id: 'D-011', role: '회계', action: 'condition_check', reason: '명의 확인', acted_at: new Date('2026-07-05'),
-      metadata: { condition: 'payeeProof', evidence: { reference: '통장 사본 A-03', finding: '명의 확인' } } },
-  ] });
-  assert.match(confirmed.html, /임원 승인 조건 · 1\/1 확인/);
-  assert.match(confirmed.html, /value="payment"/);
-});
-
-test('past limit breaches are listed for post-review and the dealer sees what to answer', async () => {
-  const support = await render({ url: '/?view=requests&period=2026-06', role: 0 });
-  assert.match(support.html, /과거 권한 초과 지급/);
-  assert.match(support.html, /15건 · 22,238,349원/);
-  assert.match(support.html, /value="post_audit"/);
-  const accounting = await render({ url: '/?view=accounting&period=2026-06', role: 2, events: [
-    { id: 9, group_id: 'D-011', role: '영업지원팀', action: 'post_audit', reason: '요청', acted_at: new Date('2026-07-01') },
-  ] });
-  assert.match(accounting.html, /회계·감사 확인 대기/);
-  assert.match(accounting.html, /value="post_audit_done"/);
-  const dealer = await render({ url: '/?view=agency-replies&period=2026-06&group=D-011', role: 3, events: [
-    { id: 4, group_id: 'D-011', role: '영업지원팀', action: 'resend', reason: '보완 요청', agency_id: 'D-011', acted_at: new Date('2026-07-04'),
-      metadata: { ai: { recommendation: 'resend', agreed: true, unmet: [{ label: '거래처별 지급 수취계좌·예금주 명의', verdict: 'unclear' }] } } },
-  ], rows: [{ ...decision, action: 'reject', created_at: null, reason: '확인 필요' }] });
-  assert.match(dealer.html, /답변에 포함할 확인 항목/);
-  assert.match(dealer.html, /지난 답변에서 확인되지 않은 항목/);
-  assert.match(dealer.html, /거래처별 지급 수취계좌·예금주 명의 · 불명확/);
-});
-test('support sees current review before evidence, receives prior context and enters only a new occurrence date', async () => {
-  const metadata = { occurredOn: '2026-07-01', effectiveOn: '2026-07-01', effectivePeriod: '2026-06', source: 'scenario' };
-  const { html } = await render({ url: '/?view=requests&period=2026-06&group=D-011', role: 0,
-    rows: [{ ...decision, action: 'reject', created_at: null, reason: '수취 명의 확인 필요' }], events: [
-      { id: 1, group_id: 'D-011', role: '영업지원팀', action: 'send', reason: '기존 요청문', acted_at: new Date('2026-07-02'), metadata },
-      { id: 2, group_id: 'D-011', role: '대리점', action: 'reply', reason: '받은 회신 내용', acted_at: new Date('2026-07-03'), metadata },
-    ] });
-  assert.ok(html.indexOf('id="followup"') < html.indexOf('<h3>판단 근거'));
-  assert.match(html, /name="occurredOn" value="" required/);
-  assert.match(html, /name="effectiveOn" value="" disabled/);
-  assert.match(html, /<details><summary>보낸 요청서/);
-  const history = html.slice(html.indexOf('id="history"'));
-  assert.match(history, /내림차순 · 최신 기록부터/);
-  assert.ok(history.indexOf('받은 회신 내용') < history.indexOf('기존 요청문'));
-});
-
-test('same-date option does not allow accounting to bypass mandatory evidence', async () => {
-  const result = await render({ url: '/?view=accounting&period=2026-06&group=D-011', role: 2, rows: [decision],
-    body: new URLSearchParams({ action: 'payment', occurredOn: '2026-07-01', sameEffectiveDate: 'yes', effectivePeriod: '2026-06' }).toString() });
-  assert.equal(result.status, 400);
-});
-test('resubmitted requests point back to executive decision and keep decision actions', async () => {
+test('past conclusion of audit report adds the three-month precheck condition', async () => {
   const { html } = await render({ url: '/?view=requests&period=2026-06&group=D-011', events: [
-    { id: 7, group_id: 'D-011', action: 'resubmit', role: '영업지원팀', reason: '', acted_at: new Date('2026-07-01') },
+    { id: 5, group_id: 'D-011', role: '회계', action: 'post_audit_done', reason: '감사 보고', acted_at: new Date('2026-07-01'), metadata: { conclusion: 'audit_report' } },
   ] });
-  assert.match(html, /현재 단계 · 재상신 · 임원 재결정/);
-  assert.match(html, /value="approve"/);
-  assert.match(html, /value="reject"/);
+  assert.equal((html.match(/name="condition"/g) ?? []).length, 5);
+  assert.match(html, /다음 3개월 이 묶음 지급 전 영업임원 사전 확인/);
 });
-test('accounting rejects bare confirmation and renders evidence reference fields', async () => {
+
+test('compose screen lists catalog items with reasons and starts the AI proposal', async () => {
+  const { html } = await render({ url: '/?view=followup&period=2026-06&group=D-011', role: 0, rows: [rejected] });
+  assert.match(html, /거래처에 확인 요청하기/);
+  assert.match(html, /임원 의견/);
+  assert.match(html, /value="ai_items"/);
+  assert.match(html, /name="item" value="payee" checked/);
+  assert.match(html, /name="item" value="sameAddress">/);
+  assert.match(html, /name="dueDate"/);
+  assert.match(html, /value="send"/);
+});
+
+test('reply review shows answers per agency, AI verdicts and a narrowed resend preview', async () => {
+  const events = [sent, reply(2, 'D-011', { sharedAccount: { text: '공동 납품 정산용' }, payee: { account: '국민 412-27-556311', holder: '금강상사11', attachment: '사본.pdf' } }),
+    reply(3, 'D-024', { sharedAccount: { text: '잘못 입금' } })];
+  const { html } = await render({ url: '/?view=followup&period=2026-06&group=D-011', role: 0, rows: [rejected], events,
+    calls: [{ id: 7, kind: 'reply_check', group_id: 'D-011', created_at: new Date('2026-07-03'), finished_at: new Date('2026-07-03'), result: {
+      replyId: '3', recommendation: 'resend', draft: '', items: [
+        { id: 'sharedAccount', label: items[0].label, verdict: 'partial', quote: '공동 납품 정산용', note: '답하지 않은 거래처가 있음' },
+        { id: 'payee', label: items[1].label, verdict: 'missing', quote: null, note: '' },
+      ] } }] });
+  assert.match(html, /답변 2\/3곳/);
+  assert.match(html, /AI 의견: <strong>보완 요청/);
+  assert.match(html, /"공동 납품 정산용"/);
+  assert.match(html, /장려금 받을 계좌와 예금주 → 성일상사24, 대륙상사37/);
+  assert.match(html, /value="resend"/);
+  assert.match(html, /name="resubmit" value="1"/);
+  assert.doesNotMatch(html, /data-ai data-auto/);
+});
+
+test('dealer sees only own items and the narrowed request after a resend', async () => {
+  const resend = { id: 4, group_id: 'D-011', role: '영업지원팀', action: 'resend', reason: 'D-024 · 장려금 받을 계좌와 예금주 보완이 필요합니다.\nD-037 · 공동 입금계좌를 함께 쓴 이유 보완이 필요합니다.',
+    acted_at: new Date('2026-07-04'), metadata: { ...metadata, dueDate: '2026-07-08', items: [{ ...items[1], recipients: ['D-024'] }, { ...items[0], recipients: ['D-037'] }] } };
+  const events = [sent, reply(2, 'D-024', { sharedAccount: { text: '잘못 입금' } }), resend];
+  const dealer = await render({ url: '/?view=agency-replies&period=2026-06&group=D-011', role: 3, dealer: 'D-024', rows: [rejected], events });
+  assert.match(dealer.html, /보완이 필요한 항목 1개/);
+  assert.match(dealer.html, /name="acc_payee"/);
+  assert.doesNotMatch(dealer.html, /name="ans_sharedAccount"/);
+  assert.doesNotMatch(dealer.html, /D-037 ·|대륙상사37|공동 입금계좌 경위와 실제/);
+  const other = await render({ url: '/?view=agency-replies&period=2026-06&group=D-011', role: 3, dealer: 'D-011', rows: [rejected], events });
+  assert.doesNotMatch(other.html, /name="reply"|value="reply"/);
+  const post = await render({ url: '/?view=agency-replies&period=2026-06&group=D-011', role: 3, dealer: 'D-011', rows: [rejected], events,
+    body: new URLSearchParams({ action: 'reply', ...metadata, sameEffectiveDate: 'yes', acc_payee: '1', holder_payee: '2' }).toString() });
+  assert.equal(post.status, 403);
+});
+
+test('accounting must confirm every approval condition before payment', async () => {
+  const conditional = { ...decision, conditions: ['payeeProof'] };
   const url = '/?view=accounting&period=2026-06&group=D-011';
-  const { html } = await render({ url, role: 2, rows: [decision] });
-  assert.match(html, /name="evidenceReference"/);
-  assert.match(html, /name="evidenceFinding"/);
-  const result = await render({ url, role: 2, rows: [decision], body: new URLSearchParams({ action: 'payment', reason: '1', occurredOn: '2026-07-01', effectiveOn: '2026-07-01', effectivePeriod: '2026-06' }).toString() });
-  assert.equal(result.status, 400);
+  const { html } = await render({ url, role: 2, rows: [conditional] });
+  assert.match(html, /조건 0\/1 · 지급 보류/);
+  assert.match(html, /value="condition_check"/);
+  assert.match(html, /name="action" value="payment" disabled/);
+  const blocked = await render({ url, role: 2, rows: [conditional],
+    body: new URLSearchParams({ action: 'payment', revision: '0', ...metadata, sameEffectiveDate: 'yes' }).toString() });
+  assert.equal(blocked.status, 409);
+  const bare = await render({ url, role: 2, rows: [conditional],
+    body: new URLSearchParams({ action: 'condition_check', condition: 'payeeProof', revision: '0', ...metadata, sameEffectiveDate: 'yes' }).toString() });
+  assert.equal(bare.status, 400);
+  const confirmed = await render({ url, role: 2, rows: [conditional], events: [
+    { id: 3, group_id: 'D-011', role: '회계', action: 'condition_check', reason: '명의 확인', acted_at: new Date('2026-07-05'),
+      metadata: { condition: 'payeeProof', evidence: { reference: '은행 예금주 조회', finding: '명의 확인' } } },
+  ] });
+  assert.match(confirmed.html, /조건 1\/1 · 지급 가능/);
+  assert.match(confirmed.html, /class="primary" name="action" value="payment">/);
 });
-test('dealer intake exposes source and business dates without claiming PDF attachment support', async () => {
+
+test('past breaches: accounting decides one of three conclusions, others only read', async () => {
+  const support = await render({ url: '/?view=post-audit&period=2026-06', role: 0 });
+  assert.match(support.html, /15건, 22,238,349원/);
+  assert.match(support.html, /첫 지급\(2026-02-04\) 전이라/);
+  assert.doesNotMatch(support.html, /value="post_audit_done"/);
+  const accounting = await render({ url: '/?view=post-audit&period=2026-06', role: 2 });
+  for (const value of ['closed', 'audit_report', 'recovery']) assert.match(accounting.html, new RegExp('name="conclusion" value="' + value + '"'));
+  const missing = await render({ url: '/?view=post-audit&period=2026-06', role: 2,
+    body: new URLSearchParams({ action: 'post_audit_done', auditGroup: 'D-011', reason: '의견' }).toString() });
+  assert.equal(missing.status, 400);
+  const recovery = await render({ url: '/?view=post-audit&period=2026-06', role: 0, events: [
+    { id: 5, group_id: 'D-011', role: '회계', action: 'post_audit_done', reason: '회수 검토', acted_at: new Date('2026-07-01'), metadata: { conclusion: 'recovery' } },
+  ] });
+  assert.match(recovery.html, /value="recovery_done"/);
+  const home = await render({ url: '/?view=home&period=2026-06', role: 0, events: recovery.html ? [
+    { id: 5, group_id: 'D-011', role: '회계', action: 'post_audit_done', reason: '회수 검토', acted_at: new Date('2026-07-01'), metadata: { conclusion: 'recovery' } },
+  ] : [] });
+  assert.match(home.html, /회수 확인/);
+});
+
+test('history is newest first and records stay collapsed with defaults', async () => {
+  const events = [sent, reply(2, 'D-011', { sharedAccount: { text: '받은 회신 내용' } })];
+  const { html } = await render({ url: '/?view=followup&period=2026-06&group=D-011', role: 0, rows: [rejected], events });
+  const history = html.slice(html.indexOf('id="history"'));
+  assert.ok(history.indexOf('거래처 답변') < history.indexOf('거래처 확인 요청'));
+  assert.match(html, /<details class="record"><summary>기록 정보/);
+  assert.match(html, /name="occurredOn" value="\d{4}-\d{2}-\d{2}" required/);
+});
+
+test('dealer documents offer a structured change request without other agencies', async () => {
   const { html } = await render({ url: '/?view=documents&period=2026-06', role: 3 });
-  assert.match(html, /추가 시나리오 자료/);
-  assert.match(html, /name="occurredOn"/);
-  assert.match(html, /name="effectiveOn"/);
-  assert.match(html, /이미지·PDF는 받지 않으며/);
+  assert.match(html, /등록 정보 변경 신청/);
+  assert.match(html, /name="kind" value="account" checked/);
+  assert.match(html, /name="newValue"/);
+  assert.doesNotMatch(html, /성일상사24|대륙상사37/);
+});
+
+test('administrator sees the catalog and AI log; others cannot', async () => {
+  const catalog = await render({ url: '/?view=catalog&period=2026-06', role: 4, catalog: [
+    { id: 'p9', kind: 'item', label: '공동 납품 계약 여부', format: 'text', attachment: '', status: 'proposed' },
+  ] });
+  assert.match(catalog.html, /공동 납품 계약 여부/);
+  assert.match(catalog.html, /AI 제안 · 검토 대기/);
+  assert.match(catalog.html, /value="catalog_add"/);
+  const denied = await render({ url: '/?view=catalog&period=2026-06', role: 0 });
+  assert.equal(denied.status, 403);
+  const log = await render({ url: '/?view=ai-log&period=2026-06', role: 4 });
+  assert.match(log.html, /AI 사용 기록/);
 });
