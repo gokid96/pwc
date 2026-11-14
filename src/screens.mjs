@@ -218,7 +218,8 @@ export function supportDetail(c, h) {
       role0 ? h.post({ view: 'requests', group: id }, '<button name="action" value="remind">임원에게 다시 알리기</button>') : ''];
   } else if (!record) {
     next = ['영업지원팀이 승인하면 돼요.', '', role0 && c.selectable(entry) ? h.post({ view: 'requests', group: id },
-      '<input type="hidden" name="request" value="' + escape(id) + '"><button class="primary" name="action" value="bulk_approve">승인</button>') : ''];
+      '<input type="hidden" name="request" value="' + escape(id) + '"><span class="line" style="flex-wrap:wrap"><input name="reason" maxlength="300" placeholder="보류, 반려 사유" aria-label="보류, 반려 사유" style="width:200px">' +
+      '<button name="action" value="bulk_hold">보류</button><button class="danger" name="action" value="bulk_reject">반려</button><button class="primary" name="action" value="bulk_approve">승인</button></span>') : ''];
   } else next = ['처리가 끝났어요.', '', ''];
   const checks = [
     ...(deposits.length ? [['deposit', h.name(deposits[0].agencyId) + '가 다른 곳 계좌로 ' + deposits.length + '번 입금했어요',
