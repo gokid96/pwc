@@ -680,7 +680,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             role, ids: form.getAll('request'), requests: originalList.map(entry => ({ ...entry, approver: approverOf(entry) })),
             savedIds: new Set(currentDecisions.map(row => row.group_id)),
             affected: new Set(currentReviews.flatMap(review => review.details.scope.agencies)),
-            approve: id => saveDecision(db, period, id, role, 'approve', '', [], { ...decisionSnapshot(originalList.find(entry => entry.group.groupId === id)), occurredOn: metadata.occurredOn }),
+            approve: id => saveDecision(db, period, id, role, 'approve', '', [], { ...decisionSnapshot(originalList.find(entry => entry.group.groupId === id)), occurredOn: metadata?.occurredOn }),
           });
         }
         const review = latestReview(currentReviews, item);
@@ -767,7 +767,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (held) {
             if (state !== 'resubmitted') return 409;
             if (action === 'approve') {
-              if (!record) await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata.occurredOn });
+              if (!record) await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata?.occurredOn });
               else if (record.action !== 'approve') {
                 await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,acted_at,metadata)
                   VALUES ($1,$2,$3,$4,$5,$6,$7)`, [...ids, record.role, record.action, record.reason, record.acted_at, { occurredOn: record.snapshot?.occurredOn ?? null }]);
@@ -782,7 +782,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             return;
           }
           if (record) return 409;
-          await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata.occurredOn });
+          await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata?.occurredOn });
           return;
         }
         let stepMetadata = {};

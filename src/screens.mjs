@@ -218,7 +218,7 @@ export function supportDetail(c, h) {
       role0 ? h.post({ view: 'requests', group: id }, '<button name="action" value="remind">임원에게 다시 알리기</button>') : ''];
   } else if (!record) {
     next = ['영업지원팀이 승인하면 돼요.', '', role0 && c.selectable(entry) ? h.post({ view: 'requests', group: id },
-      '<input type="hidden" name="request" value="' + escape(id) + '"><span class="line" style="flex-wrap:wrap"><input name="reason" maxlength="300" placeholder="보류, 반려 사유" aria-label="보류, 반려 사유" style="width:200px">' +
+      '<input type="hidden" name="request" value="' + escape(id) + '"><div hidden>' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div><span class="line" style="flex-wrap:wrap"><input name="reason" maxlength="300" placeholder="보류, 반려 사유" aria-label="보류, 반려 사유" style="width:200px">' +
       '<button name="action" value="bulk_hold">보류</button><button class="danger" name="action" value="bulk_reject">반려</button><button class="primary" name="action" value="bulk_approve">승인</button></span>') : ''];
   } else next = ['처리가 끝났어요.', '', ''];
   const checks = [
@@ -531,7 +531,7 @@ export function execDecision(c, h) {
         (key && !key.startsWith('link:') ? '<div id="' + key + '" hidden style="flex-basis:100%;padding:8px 0 0 30px;font-size:14px;display:flex;flex-direction:column;gap:4px">' + detail + '</div>' : '') + '</div>').join('') + '</div></section>' : '') +
     (enabled ? (Object.keys(basis).length && !call ? h.post({ view: 'requests', group: id }, '<button name="action" value="ai_conditions">AI 조건 제안</button>', ' hidden data-ai data-auto data-target="#decision"') : '') +
       (call?.finished_at ? regen.form : '') +
-      h.post({ view: 'requests', group: id }, h.revision(entry) + '<section class="card" id="decision" style="border-color:#c9dcf7"><div class="hd"><h2>결정</h2>' +
+      h.post({ view: 'requests', group: id }, h.revision(entry) + '<div hidden>' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div><section class="card" id="decision" style="border-color:#c9dcf7"><div class="hd"><h2>결정</h2>' +
         '<span class="r"><span data-ai-status>' + (call?.result ? 'AI 제안 조건은 바꿔도 돼요' : call?.finished_at ? 'AI 제안을 못 받았어요. 직접 골라 주세요' : Object.keys(basis).length ? 'AI가 조건을 고르는 중이에요' : '') + '</span>' +
         (call?.finished_at ? regen.button : '') + '</span></div>' +
         '<div class="seg wide-seg" role="radiogroup" aria-label="결정">' + [['approve', '승인'], ['clarify', '추가 확인'], ['reject', '거절']].map(([value, label], index) =>
