@@ -62,7 +62,7 @@ function summaryCard(c, h, entry, { compact = false } = {}) {
   const month = Number(entry.period.slice(5)) + '월';
   const head = '<section class="card"><div class="kv" style="font-size:15px">' +
     (entry.group.members.length > 1 ? '<span>묶인 거래처</span><span>' + entry.group.members.map(member => escape(h.name(member.agencyId))).join(', ') + '</span>' : '') +
-    '<span>' + month + ' 합계</span><strong style="font-size:22px">' + money(entry.totalKrw) + '</strong>' +
+    '<span>' + month + ' 합계 ' + src('calc', '원본 계산') + '</span><strong style="font-size:22px">' + money(entry.totalKrw) + '</strong>' +
     '<span>팀 승인 한도</span><span>' + money(LIMIT) + (over ? ' <strong style="color:#a12a2a;margin-left:6px">' + manwon(entry.totalKrw - LIMIT) + ' 초과</strong>' : '') + '</span>' +
     '<span>승인권자</span><strong' + (over ? ' style="color:#a12a2a"' : '') + '>' + (over ? '영업임원' : '영업지원팀') + '</strong></div></section>';
   if (compact || entry.group.members.length < 2) return head;
@@ -371,7 +371,7 @@ export function replyReview(c, h) {
     (state === 'received' && c.open && !check ? h.post({ view: 'followup', group: id }, '<button name="action" value="ai_reply">AI 판정</button>', ' hidden data-ai data-auto data-target="#review"') : '') +
     (editing && check?.finished_at ? regen.form : '') +
     '<div id="review" style="display:flex;flex-direction:column;gap:16px">' +
-    '<section class="card" id="verdicts"><div class="hd"><h2>확인 항목</h2><span class="r"><span data-ai-status>' + aiState + '</span>' + (editing && check?.finished_at ? regen.button : '') + '</span></div>' +
+    '<section class="card" id="verdicts"><div class="hd"><h2>확인 항목 ' + src('reply', '가상 회신') + '</h2><span class="r"><span data-ai-status>' + aiState + '</span>' + (editing && check?.finished_at ? regen.button : '') + '</span></div>' +
     '<div class="rows">' + rows + '</div></section>' + actions + '</div>' + history(c, entry);
 }
 
@@ -418,7 +418,7 @@ export function documentDetail(c, h) {
     (canEdit && !extract ? '<form method="post" action="' + post({}) + '" hidden data-ai data-auto data-target="#compare"><button name="action" value="document_extract">AI 읽기</button></form>' : '') +
     (canEdit && extract?.finished_at ? regen.form : '') +
     '<form method="post" action="' + post({}) + '" id="compare" style="display:flex;flex-direction:column;gap:16px">' +
-    '<section class="card"><div class="hd"><h2>등록 정보와 비교</h2><span class="r"><span data-ai-status>' + aiStatus + '</span>' + (canEdit && extract?.finished_at ? regen.button : '') +
+    '<section class="card"><div class="hd"><h2>등록 정보와 비교 ' + src('reply', '가상 서류') + '</h2><span class="r"><span data-ai-status>' + aiStatus + '</span>' + (canEdit && extract?.finished_at ? regen.button : '') +
       '<a class="link" href="#original" data-expand="original">원본 보기</a></span></div>' +
     '<div id="original" hidden style="margin-bottom:12px"><pre class="doc">' + escape(doc.original) + '</pre><p class="muted" style="margin-top:6px;font-size:12px">' + metadataView(doc.metadata, escape) + '</p></div>' +
     '<div class="row" style="border:0;padding:0 0 6px;color:#526074;font-size:13px"><span style="flex:0 0 80px"></span><span style="flex:1 1 140px">등록</span><span style="flex:1 1 180px">서류</span><span style="flex:0 0 52px"></span></div><div class="rows">' +
@@ -701,7 +701,7 @@ export function postAudit(c, h) {
     '<section class="card"><p style="font-size:16px;font-weight:600">임원 승인 대상이 팀 승인으로 지급됐어요</p>' +
     '<p class="muted" style="font-size:14px;margin-top:4px">' + selected.rowCount + '건, ' + money(selected.totalKrw) + '. 이미 지급된 돈이라 기록과 후속 조치만 정해요.</p>' +
     '<div class="kv" style="margin-top:12px"><span>묶인 거래처</span><span>' + names + '</span></div></section>' +
-    '<section class="card"><div class="hd"><h2>월별 지급</h2><span class="r">매달 영업지원팀 승인</span></div>' +
+    '<section class="card"><div class="hd"><h2>월별 지급 ' + src('raw', '원본') + '</h2><span class="r">매달 영업지원팀 승인</span></div>' +
     table(['정산월', '합계', '지급일'], selected.months.map(month => ['<span title="원본 ' + escape(month.sources.map(src => src.file + ' ' + src.row + '행').join(', ')) + '">' + escape(month.period) + '</span>',
       money(month.paidKrw), escape(month.paymentDates.join(', '))]), { numeric: [1] }) + '</section>' +
     '<section class="card"><div class="hd"><h2>승인 당시 등록 정보</h2><span class="r">' + escape(selected.masterCheckOn ?? '') + '</span></div>' +
