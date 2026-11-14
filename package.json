@@ -1,6 +1,11 @@
 {
   "name": "aurora-ops",
   "private": true,
-  "scripts": { "start": "node src/server.mjs", "test": "node --test" },
-  "dependencies": { "@aws-sdk/client-s3": "^3.900.0", "pg": "^8.16.0" }
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  }
 }

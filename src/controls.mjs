@@ -198,3 +198,39 @@ export function precheckGroups(auditEvents, period) {
   return new Set(auditEvents.filter(event => event.period && ['audit_report', 'recovery'].includes(event.metadata?.conclusion) &&
     monthIndex(period) - monthIndex(event.period) >= 1 && monthIndex(period) - monthIndex(event.period) <= 3).map(event => event.group_id));
 }
+
+// 장려금률(장려금 ÷ 매출): 원본 금액으로 코드가 계산한다. AI 설명의 근거 숫자는 여기서만 나온다.
+export function rebateRates(data, period) {
+  const rate = row => Number(row.rebate_amount_krw) / Number(row.sales_performance_krw) * 100;
+  const current = data.rebates.filter(row => row.period_ym === period && Number(row.sales_performance_krw) > 0);
+  const mean = current.length ? current.reduce((sum, row) => sum + rate(row), 0) / current.length : 0;
+  const byAgency = new Map(current.map(row => {
+    const past = data.rebates.filter(other => other.agency_id === row.agency_id && other.period_ym < period && Number(other.sales_performance_krw) > 0);
+    return [row.agency_id, { rate: rate(row), usual: past.length ? past.reduce((sum, other) => sum + rate(other), 0) / past.length : null, months: past.length }];
+  }));
+  return { mean, byAgency };
+}
+
+export const pct = value => (Math.round(value * 10) / 10).toFixed(1) + '%';
+
+// 팀 승인 이상 표시: 이번 달 장려금률이 그 거래처 평소(지난 달들 평균)보다 1.2%p 이상 높으면 표시한다.
+export function rateAnomaly(rates, agencyId, threshold = 1.2) {
+  const row = rates.byAgency.get(agencyId);
+  if (!row || row.usual === null || row.rate - row.usual < threshold) return null;
+  return { rate: pct(row.rate), usual: pct(row.usual), diff: (Math.round((row.rate - row.usual) * 10) / 10).toFixed(1) + '%p' };
+}
+
+// AI 문장 검증: 고른 사실 번호가 허용 목록에 있고, 문장의 숫자가 모두 고른 사실 안에 있어야 통과한다.
+export function validateGroundedPoints(raw, facts, { max = 3, length = 80 } = {}) {
+  const byId = new Map(facts.map(fact => [fact.id, fact.text]));
+  const numbers = text => (String(text).match(/\d[\d,.]*/g) ?? []).map(token => token.replace(/,/g, '').replace(/\.$/, ''));
+  const points = (Array.isArray(raw?.points) ? raw.points : []).slice(0, max).filter(point => {
+    const ids = Array.isArray(point?.facts) ? point.facts : [];
+    const text = String(point?.text ?? '').trim();
+    if (!text || text.length > length || !ids.length || !ids.every(id => byId.has(id))) return false;
+    const allowed = new Set(ids.flatMap(id => numbers(byId.get(id))));
+    return numbers(text).every(token => allowed.has(token));
+  }).map(point => ({ facts: [...new Set(point.facts)], text: String(point.text).trim() }));
+  if (!points.length) throw new Error('근거와 맞는 문장이 없어요');
+  return { points };
+}

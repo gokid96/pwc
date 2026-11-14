@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
+import { sourceDirectory } from './fixtures/source-directory.mjs';
 import { createWorkflow } from '../src/workflow.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 import { callAssistant, documentSamples } from '../src/condition.mjs';
@@ -11,7 +11,7 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
   assert.ok(['127.0.0.1', 'localhost'].includes(new URL(process.env.TEST_DATABASE_URL).hostname), 'Use an isolated local database only');
   const { default: pg } = await import('pg');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+  const data = await readW07Data(sourceDirectory);
   // Deterministic stand-in for Gemini: the real validators still check every answer.
   const fakeAI = (kind, input) => {
     if (kind === 'items') return { items: input.allowed.filter(row => ['sharedAccount', 'payee', 'sameRep'].includes(row.id)).map(row => ({ id: row.id,
@@ -20,6 +20,9 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
       const line = input.reply.split('\n').find(text => text.startsWith(row.label + ':'));
       return { id: row.id, verdict: line ? 'met' : 'missing', quote: line ? line.slice(0, 12) : '', note: line ? '' : '답 없음' }; }) };
     if (kind === 'conditions') return { conditions: ['payeeProof', 'sharedAccountStatement'] };
+    if (kind === 'review_summary') return { points: [{ facts: ['rate'], text: input.facts.find(fact => fact.id === 'rate').text.slice(0, 70) },
+      { facts: ['total'], text: '합계가 99,999,999원이에요' }] };
+    if (kind === 'anomaly_note') return { points: input.facts.map(fact => ({ facts: [fact.id], text: '평소보다 장려금률이 높아요' })) };
     throw Error('unused');
   };
   const workflow = createWorkflow(pool, async () => data, calculateW07, (kind, input) => callAssistant(kind, input, { run: async () => fakeAI(kind, input) }));
@@ -44,7 +47,7 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
     assert.match(await visit(2), /은행 회신 입력/);
     const event = (await pool.query("SELECT metadata FROM w07_event WHERE action='payment' ORDER BY id DESC LIMIT 1")).rows[0];
     assert.equal(event.metadata.effectivePeriod, '2026-06');
-    assert.match(event.metadata.evidence.reference, /지급 배치 B-\d+ \(모의\)/);
+    assert.match(event.metadata.evidence.reference, /지급 배치 B-\d{8}-\d{2} \(모의\)/);
     assert.equal(event.metadata.payees.length, 3);
     assert.ok(event.metadata.payees.every(row => row.status !== 'mismatch'));
     const decision = (await pool.query("SELECT snapshot FROM w07_decision WHERE group_id='D-011'")).rows[0];
@@ -85,11 +88,12 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
     const check = (await pool.query("SELECT result FROM w07_ai_call WHERE kind='reply_check' ORDER BY id DESC LIMIT 1")).rows[0].result;
     assert.equal(check.recommendation, 'resend');
     assert.equal(check.items.find(row => row.id === 'sharedAccount').verdict, 'partial', '미답변 거래처가 있으면 충족이 아님');
-    assert.match(await visit(0, null, { view: 'followup' }), /AI 의견: <strong>보완 요청/);
-    await followup({ action: 'resend' });
+    assert.match(await visit(0, null, { view: 'followup' }), /보완 요청 <strong>성일상사24, 대륙상사37/);
+    await followup({ action: 'resend', picked: '1' }, [400]);
+    await followup([['action', 'resend'], ['picked', '1'], ['target', 'payee:D-024'], ['target', 'payee:D-037'], ['target', 'sharedAccount:D-024'], ['target', 'sharedAccount:D-037'], ['target', 'sameRep:D-037']]);
     const resend = (await pool.query("SELECT metadata FROM w07_event WHERE action='resend' ORDER BY id DESC LIMIT 1")).rows[0].metadata;
-    assert.equal(resend.ai.agreed, true);
     assert.deepEqual(resend.items.find(row => row.id === 'payee').recipients, ['D-024', 'D-037']);
+    assert.deepEqual(resend.items.find(row => row.id === 'sharedAccount').recipients, ['D-024', 'D-037']);
     assert.match(await visit(3, null, {}, [200], 'D-024'), /보완이 필요한 항목/);
     await answer('D-024', { acc_payee: '하나 233-91-004417', holder_payee: '성일상사24', att_payee: '통장사본.pdf', yn_sameRep: '예', ans_sameRep: '동일', att_sameRep: '등록증.pdf' });
     await answer('D-037', { ans_sharedAccount: '공동 정산용', acc_payee: '국민 412-27-556310', holder_payee: '대륙상사37', att_payee: '통장사본.pdf',
@@ -101,16 +105,31 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
   }
   try {
     await visit(0);
-    for (const scenario of ['normal', 'conditional', 'rejection', 'change-waiting', 'change-approved']) {
+    for (const scenario of ['normal', 'conditional', 'rejection', 'mismatch', 'change-waiting', 'change-approved']) {
+      const callsBefore = Number((await pool.query('SELECT count(*) FROM w07_ai_call')).rows[0].count);
       await visit(4, { action: 'reset', confirm: '2026-06 초기화' }, { view: 'catalog', group: '' });
+      assert.equal(Number((await pool.query('SELECT count(*) FROM w07_ai_call')).rows[0].count), callsBefore, '초기화해도 AI 기록은 남음');
+      assert.equal((await pool.query("SELECT count(*) FROM w07_ai_call WHERE archived_at IS NULL AND period='2026-06'")).rows[0].count, '0');
       if (scenario === 'normal') await visit(0, { action: 'reset' }, { group: '' }, [403]);
       if (scenario === 'normal') {
+        await visit(0, [['action', 'bulk_reject'], ['request', 'D-003']], { group: '' }, [400]);
+        await visit(0, [['action', 'bulk_hold'], ['request', 'D-003'], ['reason', '매출 증빙 확인 중']], { group: '' });
+        await visit(0, [['action', 'bulk_approve'], ['request', 'D-003']], { group: '' }, [409]);
+        await visit(0, { action: 'team_release', reason: '증빙 확인' }, { group: 'D-003' });
+        await visit(0, [['action', 'bulk_reject'], ['request', 'D-004'], ['reason', '매출 실적 중복 계상']], { group: '' });
+        assert.match(await visit(0, null, { group: '', tab: 'rejected' }), /D-004|반려/);
         await visit(0, [['action', 'bulk_approve'], ['request', 'D-001'], ['request', 'D-002']], { group: '' });
-        await visit(2, { action: 'batch_pay' }, { group: '' });
+        await Promise.all([
+          visit(2, { action: 'batch_pay' }, { group: '' }, [303, 409]),
+          visit(2, { action: 'batch_pay' }, { group: '' }, [303, 409]),
+        ]);
         const batch = (await pool.query("SELECT group_id, metadata FROM w07_event WHERE action='payment' ORDER BY group_id")).rows;
         assert.deepEqual(batch.map(row => row.group_id), ['D-001', 'D-002']);
         assert.equal(batch[0].metadata.batch, batch[1].metadata.batch);
-        await visit(2, { action: 'batch_result_ok' }, { group: '' });
+        await Promise.all([
+          visit(2, { action: 'batch_result_ok' }, { group: '' }, [303, 409]),
+          visit(2, { action: 'batch_result_ok' }, { group: '' }, [303, 409]),
+        ]);
         assert.equal((await pool.query("SELECT count(*) FROM w07_event WHERE action='payment_ok'")).rows[0].count, '2');
         await step(1, 'approve'); await payment(); continue;
       }
@@ -123,9 +142,17 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
         assert.equal(concluded.masterCheck, 'unknown');
         await visit(2, { action: 'audit_master_check', auditGroup: 'D-011', masterCheck: 'same', reason: '늦은 확인' }, { view: 'post-audit', group: '' }, [409]);
         await visit(2, { action: 'post_audit_done', auditGroup: 'D-011', conclusion: 'closed', reason: '중복' }, { view: 'post-audit', group: '' }, [409]);
-        assert.match(await visit(2, null, { view: 'post-audit', group: '' }), /결론: 감사 보고/);
+        assert.match(await visit(2, null, { view: 'post-audit', group: '' }), /감사 보고/);
         await visit(1, { action: 'ai_conditions' });
+        await visit(1, { action: 'ai_summary' });
+        const summary = (await pool.query("SELECT result FROM w07_ai_call WHERE kind='review_summary' ORDER BY id DESC LIMIT 1")).rows[0].result;
+        assert.equal(summary.points.length, 1, '사실에 없는 숫자를 쓴 문장은 버림');
+        assert.match(summary.points[0].text, /금강상사11 장려금률/);
+        await visit(0, { action: 'ai_anomaly' }, { group: '' });
+        const anomaly = (await pool.query("SELECT result FROM w07_ai_call WHERE kind='anomaly_note' ORDER BY id DESC LIMIT 1")).rows[0].result;
+        assert.ok(anomaly.points.some(point => point.facts[0] === 'D-018'), '한라인상사18 이상 표시');
         const page = await visit(1);
+        assert.match(page, /검토 요약/);
         assert.match(page, /AI 제안/);
         assert.match(page, /value="precheck3m"/);
         await visit(1, [['action', 'decide'], ['decision', 'approve'], ['reason', ''], ['condition', 'payeeProof'], ['condition', 'sharedAccountStatement'], ['condition', 'precheck3m']]);
@@ -146,13 +173,30 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
         const repay = (await pool.query("SELECT metadata FROM w07_event WHERE action='payment' ORDER BY id DESC LIMIT 1")).rows[0].metadata;
         assert.deepEqual(repay.repay, ['D-024']);
         await visit(2, { action: 'payment_result', 'result_D-011': 'success', 'result_D-024': 'success', 'result_D-037': 'success' });
-        assert.match(await visit(2), /지급 완료 · 대사 끝/);
+        assert.match(await visit(2), /지급 완료/);
+        continue;
+      }
+      if (scenario === 'mismatch') {
+        await visit(1, { action: 'reject', reason: '공동 입금계좌 경위와 실제 수취계좌 확인 필요' });
+        await clarify({ account: '국민 412-27-999999', during: async () => {
+          const bad = await answer('D-011', { bank_payee: '국민', acc_payee: '고성민', holder_payee: '' }, [400]);
+          assert.match(bad, /계좌번호는 숫자와 하이픈/);
+        } });
+        await step(1, 'approve');
+        const blocked = await visit(2, { action: 'payment' }, {}, [422]);
+        assert.match(blocked, /금강상사11의 받을 계좌가 등록 정산계좌와 달라요/);
+        assert.match(await visit(2), /변경 요청 보내기/);
+        await visit(2, { action: 'payee_resolve', agencyId: 'D-011', reason: '' }, {}, [400]);
+        await visit(2, { action: 'payee_change_request', agencyId: 'D-011' });
+        await visit(2, { action: 'payment' }, {}, [422]);
+        await visit(2, { action: 'payee_resolve', agencyId: 'D-011', reason: '대표자 전화 확인, 등록 계좌 유지' });
+        await payment();
         continue;
       }
       if (scenario === 'change-approved') { await step(1, 'approve'); await payment(); await change(); }
       else { await visit(1, { action: 'reject', reason: '공동 입금계좌 경위와 실제 수취계좌 확인 필요' }); }
       await clarify(scenario === 'rejection' ? { account: '국민 412-27-556310' } : scenario === 'change-waiting' ? { during: change } : {});
-      assert.match(await visit(1), /재결정 대기/);
+      assert.match(await visit(1), /다시 올라옴/);
       await step(1, 'approve');
       assert.match(await visit(2), /지급 시스템 반영|지급 가능/);
       await payment();

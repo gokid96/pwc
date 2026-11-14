@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { sourceDirectory } from './fixtures/source-directory.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 
 test('groups transitively, excludes one-field matches and keeps deposit evidence separate', () => {
@@ -38,7 +38,7 @@ test('groups transitively, excludes one-field matches and keeps deposit evidence
 });
 
 test('June original records produce the documented approval split', async () => {
-  const directory = fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url));
+  const directory = sourceDirectory;
   const result = calculateW07(await readW07Data(directory));
   const june = result.requests.filter(request => request.period === '2026-06');
   const support = june.filter(request => !request.exceedsLimit);

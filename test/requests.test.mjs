@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { sourceDirectory } from './fixtures/source-directory.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 import { itemBasis, itemCatalog, postAuditCause, pastExceedances, validateItemProposal } from '../src/controls.mjs';
 import { buildRequestItems, composeReply, effectiveCatalog, mergedAnswers, recipientsOf, resendItems, resendText } from '../src/requests.mjs';
 
-const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+const data = await readW07Data(sourceDirectory);
 const result = calculateW07(data);
 const june = result.requests.find(row => row.period === '2026-06' && row.group.groupId === 'D-011');
 

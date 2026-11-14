@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
+import { sourceDirectory } from './fixtures/source-directory.mjs';
 import { createWorkflow } from '../src/workflow.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
-const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+const data = await readW07Data(sourceDirectory);
 async function render({ url, role = 1, rows = [], events = [], documents = [], calls = [], reviews = [], catalog = [], body, dealer = 'D-011' }) {
   const db = { release() {}, async query(sql) {
     const items = /^SELECT/.test(sql) ? sql.includes('w07_review') ? reviews : sql.includes('w07_decision') ? rows :
@@ -39,10 +39,10 @@ test('role entry offers five roles including the administrator', async () => {
 
 test('support detail leads with one next step, a plain summary and acknowledgeable checks', async () => {
   const { html } = await render({ url: '/?view=requests&period=2026-06&group=D-011', role: 0 });
-  assert.ok(html.indexOf('다음 단계') < html.indexOf('3곳을 한 거래처로 보고 합산했어요'));
-  assert.match(html, /영업임원이 결정할 차례예요/);
+  assert.ok(html.indexOf('영업임원이 결정할 차례예요') < html.indexOf('왜 한 거래처로 보나요'));
+  assert.match(html, /금강상사11 ↔ 성일상사24/);
+  assert.doesNotMatch(html, /외 2곳/);
   assert.match(html, /value="remind"/);
-  assert.match(html, /각각은 한도 안이지만 합치면 넘어서/);
   assert.match(html, /188만원 초과/);
   assert.match(html, /성일상사24가 다른 곳 계좌로 2번 입금했어요/);
   assert.match(html, /value="ack"/);
@@ -59,10 +59,11 @@ test('executive empty list and evidence-based conditions while the AI proposal r
   const pending = await render({ url: '/?view=requests&period=2026-06&group=D-011', calls: [
     { kind: 'conditions', group_id: 'D-011', created_at: new Date('2026-07-01'), finished_at: null, result: null },
   ] });
-  assert.match(pending.html, /AI가 고르는 중/);
+  assert.match(pending.html, /AI가 조건을 고르는 중/);
+  assert.match(pending.html, /value="ai_summary"/);
   assert.equal((pending.html.match(/name="condition"/g) ?? []).length, 4);
-  assert.match(pending.html, /DP-00013·DP-00014/);
-  assert.doesNotMatch(pending.html, /data-ai data-auto/);
+  assert.match(pending.html, /DP-00013/);
+  assert.doesNotMatch(pending.html, /value="ai_conditions">AI 조건 제안<\/button><\/form>/);
   const fresh = await render({ url: '/?view=requests&period=2026-06&group=D-011' });
   assert.match(fresh.html, /value="ai_conditions"/);
   assert.match(fresh.html, /data-ai data-auto/);
@@ -79,7 +80,9 @@ test('past conclusion of audit report adds the three-month precheck condition', 
 
 test('compose screen lists catalog items with reasons and starts the AI proposal', async () => {
   const { html } = await render({ url: '/?view=followup&period=2026-06&group=D-011', role: 0, rows: [rejected] });
-  assert.match(html, /거래처에 확인 요청하기/);
+  assert.match(html, /확인 요청 작성/);
+  assert.match(html, /금강상사11, 성일상사24, 대륙상사37에 요청 보내기/);
+  assert.doesNotMatch(html, /3곳 모두/);
   assert.match(html, /임원 의견/);
   assert.match(html, /value="ai_items"/);
   assert.match(html, /name="item" value="payee" checked/);
@@ -98,10 +101,12 @@ test('reply review shows answers per agency, AI verdicts and a narrowed resend p
         { id: 'sharedAccount', label: items[0].label, verdict: 'partial', quote: '공동 납품 정산용', note: '답하지 않은 거래처가 있음' },
         { id: 'payee', label: items[1].label, verdict: 'missing', quote: null, note: '' },
       ] } }] });
-  assert.match(html, /답변 2\/3곳/);
-  assert.match(html, /AI 의견: <strong>보완 요청/);
-  assert.match(html, /"공동 납품 정산용"/);
-  assert.match(html, /장려금 받을 계좌와 예금주 → 성일상사24, 대륙상사37/);
+  assert.match(html, /기한 2026-07-08/);
+  assert.match(html, /<span class="ai-b">AI<\/span>답하지 않은 거래처가 있음/);
+  assert.match(html, /name="target" value="payee:D-024" checked/);
+  assert.match(html, /name="target" value="payee:D-037" checked/);
+  assert.match(html, /name="target" value="payee:D-011">/);
+  assert.match(html, /value="ai_reply">다시 판정/);
   assert.match(html, /value="resend"/);
   assert.match(html, /name="resubmit" value="1"/);
   assert.doesNotMatch(html, /data-ai data-auto/);
@@ -151,7 +156,9 @@ test('payment goes only to registered settlement accounts; a different answered 
   const snapshot = { totalKrw: 3888097, members: [{ agencyId: 'D-011', amountKrw: 1373515, source: 'sales_rebate_payment_cv.csv:212' }] };
   const events = [sent, reply(2, 'D-011', { payee: { account: '국민 412-27-556311', holder: '금강상사11' } })];
   const { html } = await render({ url, role: 2, rows: [{ ...decision, snapshot }], events });
-  assert.match(html, /1곳 확인 필요/);
+  assert.match(html, /금강상사11<\/strong> 계좌가 달라요/);
+  assert.match(html, /value="payee_resolve"/);
+  assert.match(html, /value="payee_change_request"/);
   assert.match(html, /name="action" value="payment" disabled/);
   assert.match(html, /승인 당시 기록 · 합계 3,888,097원/);
   const blocked = await render({ url, role: 2, rows: [decision], events,
@@ -159,14 +166,15 @@ test('payment goes only to registered settlement accounts; a different answered 
   assert.equal(blocked.status, 422);
   const same = [sent, reply(2, 'D-011', { payee: { account: '국민 412-27-556310', holder: '금강상사11' } })];
   const ok = await render({ url, role: 2, rows: [decision], events: same });
-  assert.match(ok.html, /모두 등록 정산계좌/);
+  assert.doesNotMatch(ok.html, /value="payee_resolve"/);
 });
 
 test('past breaches: accounting decides one of three conclusions, others only read', async () => {
   const support = await render({ url: '/?view=post-audit&period=2026-06', role: 0 });
   assert.match(support.html, /15건, 22,238,349원/);
   assert.match(support.html, /첫 지급\(2026-02-04\) 전부터 등록돼 있어/);
-  assert.match(support.html, /현재 등록일·지급일로 계산한 추정/);
+  assert.match(support.html, /추정: /);
+  assert.match(support.html, /아직 확인하지 않았어요/);
   assert.doesNotMatch(support.html, /value="post_audit_done"/);
   const accounting = await render({ url: '/?view=post-audit&period=2026-06', role: 2 });
   for (const value of ['closed', 'audit_report', 'recovery']) assert.match(accounting.html, new RegExp('name="conclusion" value="' + value + '"'));

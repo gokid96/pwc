@@ -76,6 +76,22 @@ label.field{display:flex;flex-direction:column;gap:6px;font-size:14px;font-weigh
 .stat{display:flex;flex-direction:column;gap:2px;background:#fff;border:1px solid #e5eaf0;border-radius:14px;padding:14px 16px;color:#182638}
 .stat:hover{text-decoration:none;border-color:#c9dcf7}
 .stat span{font-size:13px;color:#526074}.stat strong{font-size:22px}
+.hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px}.hd h2{font-size:16px}.hd .r{font-size:13px;color:#526074;white-space:nowrap;display:flex;gap:10px;align-items:center}
+.card>.hd:first-child{margin-top:0!important}
+.item-block{padding:14px 0;border-top:1px solid #eef1f5}.item-block:first-child{border-top:0;padding-top:4px}
+.choice-box{margin-top:12px;padding:12px 14px;border-radius:10px;background:#fff7e6}
+.lrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0;border-top:1px solid #eef1f5;color:#182638}
+.lrow:first-child{border-top:0}.lrow:hover{text-decoration:none;background:#f9fbfd}
+.lrow .l{display:flex;flex-direction:column;gap:2px}.lrow .l small{font-size:13px;color:#526074}
+.lrow .r{display:flex;align-items:center;gap:14px;white-space:nowrap;font-size:13px;color:#526074}
+.lrow .r .amt{min-width:110px;text-align:right;color:#182638;font-size:14px;font-variant-numeric:tabular-nums}
+.dd{display:inline-block;min-width:44px;text-align:center;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:700;background:#eef2f7;color:#35455a}
+.dd.hot{background:#fde8e8;color:#a12a2a}.dd.warn{background:#fff3d6;color:#8a5a00}
+.ai-b{display:inline-block;padding:1px 7px;border-radius:5px;background:#ece6fb;color:#59438c;font-size:11px;font-weight:800;margin-right:6px;vertical-align:1px}
+.ai-card{border:1px solid #ddd3f3;background:#faf8ff;border-radius:12px;padding:14px 16px}
+.ai-note{font-size:14px;color:#59438c;margin-top:6px}
+.kv{display:grid;grid-template-columns:1fr auto;gap:8px 16px;font-size:14px}.kv>span:nth-child(odd){color:#526074}.kv>span:nth-child(even),.kv>strong{text-align:right;font-variant-numeric:tabular-nums}
+.link{background:none;border:0;padding:0;min-height:0;color:#2467d6;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.link:hover{background:none;text-decoration:underline}
 .todo{display:flex;gap:12px;align-items:center;padding:14px 20px;border-top:1px solid #eef1f5;color:#182638}
 .todo:hover{text-decoration:none;background:#f9fbfd}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}
@@ -86,6 +102,7 @@ label.field{display:flex;flex-direction:column;gap:6px;font-size:14px;font-weigh
 .seg input{position:absolute;opacity:0;pointer-events:none}
 .seg input:checked+span{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .seg span{display:block;padding:7px 14px;border-radius:7px}
+.wide-seg{display:flex;align-self:stretch;width:100%;background:none;padding:0;gap:6px}.wide-seg label{flex:1}.wide-seg span{text-align:center;padding:10px;border:1px solid #d4dbe5;border-radius:10px}.wide-seg input:checked+span{background:#182638;color:#fff;border-color:#182638;box-shadow:none}
 form:has(input[name=decision][value=approve]:not(:checked)) [data-when=approve]{display:none}
 .choice{flex:1 1 200px;display:flex;gap:10px;padding:14px 16px;border:2px solid #e5eaf0;border-radius:12px;cursor:pointer}
 .choice:has(input:checked){border-color:#2467d6;background:#f5f9ff}
@@ -97,7 +114,7 @@ form:has(input[name=decision][value=approve]:not(:checked)) [data-when=approve]{
 .bell>summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;border:1px solid #e5eaf0;background:#fff;color:#4a5668}
 .bell>summary::-webkit-details-marker{display:none}
 .bell .badge{position:absolute;top:6px;right:6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#d64545;color:#fff;font-size:11px;font-weight:700;line-height:16px;text-align:center}
-.bell-panel{position:absolute;right:0;top:52px;width:340px;background:#fff;border:1px solid #e5eaf0;border-radius:14px;box-shadow:0 12px 32px rgba(27,37,51,.12);z-index:5;overflow:hidden}
+.bell-panel{position:absolute;right:0;top:52px;width:min(340px,calc(100vw - 32px));background:#fff;border:1px solid #e5eaf0;border-radius:14px;box-shadow:0 12px 32px rgba(27,37,51,.12);z-index:5;overflow:hidden}
 .bell-panel a{display:flex;gap:10px;padding:12px 16px;border-top:1px solid #eef1f5;color:#182638}
 .empty{padding:28px;text-align:center;color:#526074}
 pre.doc{white-space:pre-wrap;margin:0;font:inherit;font-size:13px;line-height:1.8;background:#fff;border:1px solid #e5eaf0;border-radius:8px;padding:16px}
@@ -105,6 +122,7 @@ pre.doc{white-space:pre-wrap;margin:0;font:inherit;font-size:13px;line-height:1.
 .src-raw{border-color:#9fbfe8;color:#1a4fa8}.src-calc{border-color:#b9c3d0;color:#35455a}.src-reply,.src-mock{border-style:dashed;border-color:#d8a54a;color:#7a3f00}.src-ai{border-color:#b9a6e3;color:#59438c}.src-est{border-style:dashed;border-color:#b9c3d0;color:#526074}
 .legend{font-size:12px;color:#526074;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .flash{padding:10px 14px;border-radius:10px;background:#e6f4ea;color:#1e6b34;font-size:14px}
+:focus-visible{outline:3px solid #245ac4;outline-offset:3px}
 @media (max-width:720px){.side{max-width:none;flex-basis:100%;flex-direction:row;flex-wrap:wrap;padding:12px}.brand{margin:0 12px 0 0}.side-foot{display:none}}
 `;
 
@@ -164,7 +182,7 @@ export function bell(items) {
     '</div></details>';
 }
 
-export function shell({ title, subtitle, nav, content, role, period, periods, periodLink, wide = false, notifications = null, script = '' }) {
+export function shell({ title, subtitle, nav, content, role, period, periods, periodLink, roleLink = '/?view=roles', wide = false, notifications = null, script = '' }) {
   return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
     '<title>' + escape(title) + ' | 판매장려금</title><style>' + styles + '</style></head><body><div class="app">' +
     '<nav class="side" aria-label="업무 메뉴"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><div><strong>판매장려금</strong><span>' +
@@ -173,7 +191,7 @@ export function shell({ title, subtitle, nav, content, role, period, periods, pe
     '<div class="side-foot">' + (periods && periods.length > 1 && role !== '대리점' ? '<form method="get" class="line" style="gap:6px"><input type="hidden" name="view" value="' + escape(periodLink) + '">' +
       '<select name="period" aria-label="정산월" style="padding:6px 8px">' + periods.map(value => '<option' + (value === period ? ' selected' : '') + '>' + value + '</option>').join('') +
       '</select><button class="small">보기</button></form>' : '') +
-    '<span>' + escape(role) + ' · <a href="/?view=roles">역할 바꾸기</a></span></div></nav>' +
+    '<span>' + escape(role) + ' · <a href="' + escape(roleLink) + '">역할 바꾸기</a></span></div></nav>' +
     '<main class="page"><div class="wrap' + (wide ? ' wide' : '') + '">' +
     (notifications ? '<div style="display:flex;justify-content:flex-end;margin-bottom:-8px;position:relative">' + bell(notifications) + '</div>' : '') +
     content + (role === '대리점' ? '' : '<details style="margin-top:8px"><summary>표시 읽는 법</summary>' + legend() + '</details>') + '</div></main></div>' + clientScript + script + '</body></html>';
@@ -190,7 +208,7 @@ document.addEventListener('submit',async event=>{
   if(!button||!target) return;
   button.disabled=true;
   const status=target.querySelector('[data-ai-status]');
-  if(status) status.textContent='AI가 살펴보는 중이에요 · 기다리지 않고 직접 해도 돼요';
+  if(status) status.textContent='AI가 살펴보는 중이에요. 기다리지 않고 직접 해도 돼요';
   try{
     const response=await fetch(form.getAttribute('action'),{method:'POST',body:new URLSearchParams([[button.name,button.value]])});
     if(!response.ok) throw Error();
@@ -202,10 +220,14 @@ document.addEventListener('submit',async event=>{
       if(next&&field.dataset.touched){if(field.type==='checkbox')next.checked=field.checked;else next.value=field.value;}
     }
     target.replaceWith(updated);
-  }catch{ if(status) status.textContent='AI를 쓸 수 없어요 · 직접 진행해 주세요'; }
+  }catch{ if(status) status.textContent='AI를 쓸 수 없어요. 직접 진행해 주세요'; }
   finally{button.disabled=false;}
 });
+document.addEventListener('click',event=>{const link=event.target.closest('[data-expand]');if(!link)return;const box=document.getElementById(link.dataset.expand);if(!box)return;event.preventDefault();if(box.tagName==='DETAILS')box.open=!box.open;else box.hidden=!box.hidden;box.scrollIntoView({block:'nearest',behavior:'smooth'});});
 document.addEventListener('input',event=>{if(event.target.name)event.target.dataset.touched='1';});
 document.addEventListener('change',event=>{if(event.target.name)event.target.dataset.touched='1';});
+const bulk=form=>{if(!form)return;const boxes=[...form.querySelectorAll('input[name=request]:checked')];const count=form.querySelector('[data-count]');const sum=form.querySelector('[data-sum]');if(count)count.textContent=boxes.length+'건 선택';if(sum)sum.textContent=new Intl.NumberFormat('ko-KR').format(boxes.reduce((a,b)=>a+Number(b.dataset.amount||0),0))+'원';};
+document.addEventListener('change',event=>{if(event.target.name==='request')bulk(event.target.form);});
+for(const form of document.querySelectorAll('form[data-bulk]'))bulk(form);
 for(const automatic of document.querySelectorAll('form[data-ai][data-auto]')) automatic.requestSubmit(automatic.querySelector('button'));
 </script>`;

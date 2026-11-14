@@ -1,7 +1,7 @@
 import { inputMetadata, paymentEvidence, summaryBasis } from './audit.mjs';
 import { steps, labels, requestProgress, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope } from './condition.mjs';
-import { conditionBasis, conditionCatalog, confirmedConditions, itemBasis, masterCheckResults, pastExceedances, postAuditConclusions, precheckGroups, recommendationLabels, replyCriteria, verdictLabels } from './controls.mjs';
+import { conditionBasis, conditionCatalog, confirmedConditions, itemBasis, masterCheckResults, pastExceedances, pct, postAuditConclusions, precheckGroups, rateAnomaly, rebateRates, recommendationLabels, replyCriteria, verdictLabels } from './controls.mjs';
 import { buildRequestItems, composeReply, decisionSnapshot, effectiveCatalog, payeePlan, mergedAnswers, recipientsOf, replyText, requestItems, resendItems, resendText } from './requests.mjs';
 import * as screens from './screens.mjs';
 import { BASE_DATE, shell, styles as uiStyles } from './ui.mjs';
@@ -39,7 +39,7 @@ async function transaction(pool, period, work) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['w07:' + period]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['w07:' + (pool.lockScope ?? 'default') + ':' + period]);
     const result = await work(client);
     await client.query('COMMIT');
     return result;
@@ -109,6 +109,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         request jsonb, raw jsonb, result jsonb, created_at timestamptz NOT NULL DEFAULT now(),
         finished_at timestamptz
       )`);
+      await db.query('ALTER TABLE w07_ai_call ADD COLUMN IF NOT EXISTS archived_at timestamptz');
     }).catch(error => { schema = undefined; throw error; });
     return schema;
   }
@@ -121,6 +122,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const requestedPeriod = query.get('period');
     const periodQuery = /^\d{4}-\d{2}$/.test(requestedPeriod ?? '') ? { period: requestedPeriod } : {};
     const rolePageLink = '/';
+    const caseId = query.get('case');
+    const roleContext = /^D-\d+$/.test(caseId ?? '') ? { case: caseId } : {};
     const send = (status, content) => {
       response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       response.end(content);
@@ -138,9 +141,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       if (!/^[0-4]$/.test(selected ?? '') || ['cross-site', 'same-site'].includes(request.headers['sec-fetch-site'])) return denied();
       response.writeHead(303, {
         Location: '/?' + new URLSearchParams({
-          ...periodQuery, view: historicalReview && selected === '0' ? 'review' : roleViews[Number(selected)][0],
+          ...periodQuery, ...roleContext, view: roleContext.case && selected === '0' ? 'requests' : historicalReview && selected === '0' ? 'review' : roleViews[Number(selected)][0],
         }) + (historicalReview && selected === '0' ? '#historical-review' : ''),
-        'Set-Cookie': ['w07_role=' + selected + '; Path=/; HttpOnly; Secure; SameSite=Lax',
+        'Set-Cookie': [...(response.getHeader?.('Set-Cookie') ? [response.getHeader('Set-Cookie')] : []), 'w07_role=' + selected + '; Path=/; HttpOnly; Secure; SameSite=Lax',
           ...(selected === '3' ? ['w07_dealer=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax'] : [])],
         'Cache-Control': 'no-store',
       }).end();
@@ -148,9 +151,13 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     }
     if (!role || !url.search || requestedView === 'roles') {
       if (request.method !== 'GET') return denied();
-      return send(200, entryPage('판매장려금 · 업무 역할 선택', '<p class="muted">실제 로그인 대신 역할을 골라 들어가요. 고른 역할은 이 브라우저에만 기억돼요.</p><div class="role-cards">' +
+      if (role && !url.search) {
+        response.writeHead(303, { Location: '/?view=' + roleViews[roleIndex][0], 'Cache-Control': 'no-store' }).end();
+        return;
+      }
+      return send(200, entryPage('판매장려금 운영', '<p class="muted">담당 업무를 선택하세요. 업무 기록은 현재 브라우저의 작업 공간에 저장됩니다.</p><div class="role-cards">' +
         roles.map((name, index) => '<form method="post" action="/?' +
-          escape(new URLSearchParams({ ...periodQuery, view: 'roles', select: index,
+          escape(new URLSearchParams({ ...periodQuery, ...roleContext, view: 'roles', select: index,
             ...(historicalReview ? { after: 'historical-review' } : {}) }).toString()) +
           '"><button><strong>' + name + '</strong><small>' + roleDescriptions[index] + '</small><span style="margin-top:auto;color:#2467d6">들어가기 →</span></button></form>').join('') + '</div>'));
     }
@@ -176,7 +183,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const docs = await db.query('SELECT * FROM w07_document WHERE period = $1 ORDER BY id', [period]);
       const calls = view === 'ai-log'
         ? await db.query('SELECT * FROM w07_ai_call ORDER BY id')
-        : await db.query('SELECT * FROM w07_ai_call WHERE period = $1 ORDER BY id', [period]);
+        : await db.query('SELECT * FROM w07_ai_call WHERE period = $1 AND archived_at IS NULL ORDER BY id', [period]);
       const catalogRows = await db.query('SELECT * FROM w07_catalog ORDER BY created_at, id');
       const audits = await db.query("SELECT * FROM w07_event WHERE action = 'post_audit_done'");
       const allEvents = ['catalog', 'ai-log'].includes(view) ? (await db.query('SELECT * FROM w07_event ORDER BY id')).rows : null;
@@ -195,6 +202,11 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const progressFor = entry => entry ? requestProgress(saved.get(entry.group.groupId),
       eventsFor(entry.group.groupId), entry.exceedsLimit, latestReview(reviews, entry)) : {};
     const isAffected = entry => progressFor(entry).held;
+    // 팀 승인 건 보류·반려: 마지막 보류/반려/해제 기록으로 판단한다(해제면 다시 승인 대기).
+    const teamState = entry => {
+      const last = eventsFor(entry.group.groupId).filter(event => ['team_hold', 'team_reject', 'team_release'].includes(event.action)).at(-1);
+      return last && last.action !== 'team_release' && !saved.has(entry.group.groupId) ? last : null;
+    };
     const latestReplyCheck = entry => {
       const answer = eventsFor(entry.group.groupId).findLast(event => event.action === 'reply');
       return answer && calls.filter(call => call.kind === 'reply_check' && call.group_id === entry.group.groupId &&
@@ -220,6 +232,37 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const pastConclusionFor = id => eventsFor(id).findLast(event => event.action === 'post_audit_done')?.metadata?.conclusion;
     const basisFor = entry => Object.fromEntries(Object.entries(conditionBasis(entry, { pastConclusion: pastConclusionFor(entry.group.groupId) }))
       .filter(([id]) => catalog.conditions[id]?.status !== 'disabled'));
+    // 임원 검토 요약과 이상 표시에 쓰는 사실 목록: 모두 코드가 원본·기록에서 계산한다.
+    const rates = rebateRates(data, period);
+    const nameOf = id => data.agencies.find(row => row.agency_id === id)?.agency_name ?? id;
+    const won = amount => new Intl.NumberFormat('ko-KR').format(amount) + '원';
+    const pastAll = pastExceedances(original, data, period);
+    const summaryFacts = entry => {
+      const ids = entry.group.members.map(member => member.agencyId);
+      const facts = [{ id: 'total', text: Number(period.slice(5)) + '월 합계 ' + won(entry.totalKrw) + ', 팀 승인 한도 ' + won(entry.limitKrw) +
+        (entry.totalKrw > entry.limitKrw ? ', ' + won(entry.totalKrw - entry.limitKrw) + ' 초과' : '') }];
+      const known = ids.filter(id => rates.byAgency.has(id));
+      if (known.length) facts.push({ id: 'rate', text: known.map(id => nameOf(id) + ' 장려금률 ' + pct(rates.byAgency.get(id).rate)).join(', ') + ', 전체 평균 ' + pct(rates.mean) });
+      const usual = known.filter(id => rates.byAgency.get(id).usual !== null);
+      if (usual.length) facts.push({ id: 'usual', text: usual.map(id => nameOf(id) + ' 평소 ' + pct(rates.byAgency.get(id).usual)).join(', ') });
+      const check = latestReplyCheck(entry)?.result;
+      const asked = requestItems(eventsFor(entry.group.groupId), entry.group.groupId);
+      if (check?.items?.length) facts.push({ id: 'reply', text: '거래처 답변 판정: ' + check.items.map(row => (asked.find(item => item.id === row.id)?.label ?? row.id) + ' ' + verdictLabels[row.verdict]).join(', ') });
+      const outside = entry.collectionEvidence.flatMap(evidence => evidence.deposits.filter(row => evidence.registered.length &&
+        !evidence.registered.some(owner => owner.agencyId === row.agencyId)));
+      if (outside.length) facts.push({ id: 'deposit', text: [...new Set(outside.map(row => nameOf(row.agencyId)))].join(', ') + ' 다른 거래처 등록 계좌로 입금 ' + outside.length + '번' });
+      const past = pastAll.find(row => row.groupId === entry.group.groupId);
+      if (past) facts.push({ id: 'past', text: Number(past.months[0].period.slice(5)) + '~' + Number(past.months.at(-1).period.slice(5)) + '월 한도 초과분 ' + past.rowCount + '건 ' + won(past.totalKrw) + ' 팀 승인으로 지급' +
+        (pastConclusionFor(entry.group.groupId) ? ', 지난 지급 점검 결론 ' + postAuditConclusions[pastConclusionFor(entry.group.groupId)] : '') });
+      const payees = payeePlan(entry, eventsFor(entry.group.groupId), applyChanges(data, reviews).agencies).filter(row => row.status === 'mismatch');
+      if (payees.length) facts.push({ id: 'payee', text: payees.map(row => nameOf(row.agencyId)).join(', ') + ' 답변 계좌가 등록 정산계좌와 다름' });
+      return facts;
+    };
+    const factsKey = facts => facts.map(fact => fact.id + ':' + fact.text).join('|');
+    const anomalyFacts = entries => entries.flatMap(entry => entry.group.members.length > 1 || entry.exceedsLimit ? [] : entry.group.members.flatMap(({ agencyId }) => {
+      const flag = rateAnomaly(rates, agencyId);
+      return flag ? [{ id: agencyId, text: nameOf(agencyId) + ' 장려금률 ' + flag.rate + ', 평소 ' + flag.usual + ', ' + flag.diff + ' 높음' }] : [];
+    }));
     const conditionsKey = entry => summaryBasis(entry, latestReview(reviews, entry),
       eventsFor(entry.group.groupId).filter(event => !['post_audit', 'post_audit_done', 'condition_check'].includes(event.action)),
       saved.get(entry.group.groupId));
@@ -230,6 +273,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     const list = [...current.filter(entry => !retained(entry)), ...originalList.filter(entry =>
       retained(entry) || (hasRecord(entry) && !current.some(now => now.group.groupId === entry.group.groupId)))]
       .sort((a, b) => a.group.groupId.localeCompare(b.group.groupId));
+    const continued = list.find(entry => entry.group.groupId === roleContext.case);
     const item = list.find(entry => entry.group.groupId === groupId);
     const dealer = request.headers.cookie?.match(/(?:^|;\s*)w07_dealer=(D-\d+)(?:;|$)/)?.[1];
     const agency = role === '대리점' && data.agencies.some(row => row.agency_id === dealer) ? dealer : null;
@@ -239,15 +283,27 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         if (['cross-site', 'same-site'].includes(request.headers['sec-fetch-site']) ||
             !data.agencies.some(row => row.agency_id === selectedDealer) || !/^D-\d+$/.test(selectedDealer ?? '')) return denied();
         response.writeHead(303, {
-          Location: '/?' + new URLSearchParams({ period, view: 'agency-replies' }),
+          Location: '/?' + new URLSearchParams({ period, view: 'agency-replies',
+            ...(continued?.group.members.some(member => member.agencyId === selectedDealer)
+              ? { group: continued.group.groupId } : {}) }),
           'Set-Cookie': 'w07_dealer=' + selectedDealer + '; Path=/; HttpOnly; Secure; SameSite=Lax',
           'Cache-Control': 'no-store',
         }).end();
         return;
       }
       return send(200, entryPage('대리점 포털 · 거래처 선택', '<p class="muted">실제 서비스에서는 거래처 계정으로 로그인해요. 시연용으로 거래처를 골라 주세요.</p><div class="role-cards">' + data.agencies.map(row =>
-        '<form method="post" action="' + link({ dealer: row.agency_id }) + '"><button style="min-height:56px"><strong>' +
+        '<form method="post" action="' + link({ ...roleContext, dealer: row.agency_id }) + '"><button style="min-height:56px"><strong>' +
         escape(row.agency_name) + '</strong><small>' + escape(row.agency_id) + '</small></button></form>').join('') + '</div>'));
+    }
+    if (request.method === 'GET' && !groupId && continued &&
+        ((view === 'requests' && roleIndex <= 1) ||
+         (view === 'accounting' && rows.some(row => row.group_id === caseId && row.created_at)) ||
+         (view === 'agency-replies' && continued.group.members.some(member => member.agencyId === agency)))) {
+      response.writeHead(303, {
+        Location: '/?' + new URLSearchParams({ period, view, group: continued.group.groupId }),
+        'Cache-Control': 'no-store',
+      }).end();
+      return;
     }
     const belongsToAgency = entry => entry && entry.group.members.some(member => member.agencyId === agency);
     if (agency && item && !belongsToAgency(item)) return denied();
@@ -280,11 +336,16 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           : rawAction;
       let reason = (form.get('reason') ?? '').trim();
       const metadata = inputMetadata(form, period);
+      // 지급 배치 번호: 가상 업무일 + 그날 순번 (예: B-20260708-01)
+      const batchId = occurredOn => {
+        const day = String(occurredOn ?? BASE_DATE).replace(/-/g, '');
+        const used = new Set(events.map(event => event.metadata?.batch ?? event.metadata?.evidence?.reference?.match(/B-\d{8}-\d{2}/)?.[0]).filter(id => id?.startsWith('B-' + day)));
+        return 'B-' + day + '-' + String(used.size + 1).padStart(2, '0');
+      };
       if (['document_add', 'account_apply', 'group_confirm', 'condition_check', ...Object.keys(steps)].includes(action) && !metadata)
         return send(400, '업무 발생일·적용일·적용 정산월을 확인해 주세요.');
       if (['payment', 'condition_check'].includes(action)) {
-        const evidence = paymentEvidence(form) ?? (action === 'payment' ? { reference: '지급 배치 B-' +
-          new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + ' (모의)', finding: '승인 조건 확인 후 지급 시스템 반영(모의)' } : null);
+        const evidence = paymentEvidence(form) ?? (action === 'payment' ? { reference: '지급 배치 ' + batchId(metadata?.occurredOn) + ' (모의)', finding: '승인 조건 확인 후 지급 시스템 반영(모의)' } : null);
         if (!evidence) return send(400, '확인한 자료의 이름·위치와 수취계좌·명의 등 확인 내용을 입력해 주세요.');
         metadata.evidence = evidence;
         reason = evidence.finding;
@@ -370,13 +431,20 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         const ready = list.filter(entry => !entry.exceedsLimit && !isAffected(entry) && progressFor(entry).state === 'paymentReady' &&
           eventsFor(entry.group.groupId).findLast(event => event.action === 'payment')?.metadata?.batch);
         if (!ready.length) return send(409, '은행 회신을 기다리는 일괄 지급이 없습니다.');
-        await transaction(pool, period, async db => {
+        const updated = await transaction(pool, period, async db => {
+          const latest = await db.query(`SELECT DISTINCT ON (group_id) group_id, id FROM w07_event
+            WHERE period = $1 AND group_id = ANY($2::text[]) ORDER BY group_id, id DESC`,
+          [period, ready.map(entry => entry.group.groupId)]);
+          const revisions = new Map(latest.rows.map(row => [row.group_id, row.id]));
+          if (ready.some(entry => revisions.get(entry.group.groupId) !== eventsFor(entry.group.groupId).at(-1)?.id)) return false;
           for (const entry of ready) {
             await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,'payment_ok',$4,$5)`,
               [period, entry.group.groupId, role, '은행 회신(모의) · 전부 지급', { ...(metadata ?? {}), mock: true,
                 results: Object.fromEntries(entry.group.members.map(member => [member.agencyId, { result: 'success' }])) }]);
           }
+          return true;
         });
+        if (!updated) return send(409, '화면을 새로 열어 현재 처리 단계를 확인해 주세요.');
         return redirect({ view: 'accounting' });
       }
       if (action === 'batch_pay') {
@@ -387,19 +455,26 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             !entry.exceedsLimit && !isAffected(entry) && progressFor(entry).state === 'paymentPending';
         });
         if (!ready.length) return send(409, '반영할 팀 승인 건이 없습니다.');
-        const batch = 'B-' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-        await transaction(pool, period, async db => {
+        const batch = batchId(metadata?.occurredOn);
+        const updated = await transaction(pool, period, async db => {
+          const latest = await db.query(`SELECT DISTINCT ON (group_id) group_id, id FROM w07_event
+            WHERE period = $1 AND group_id = ANY($2::text[]) ORDER BY group_id, id DESC`,
+          [period, ready.map(entry => entry.group.groupId)]);
+          const revisions = new Map(latest.rows.map(row => [row.group_id, row.id]));
+          if (ready.some(entry => revisions.get(entry.group.groupId) !== eventsFor(entry.group.groupId).at(-1)?.id)) return false;
           for (const entry of ready) {
             await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,'payment',$4,$5)`,
               [period, entry.group.groupId, role, '팀 승인 일괄 반영 · ' + batch, { batch, mock: true,
                 payees: payeePlan(entry, eventsFor(entry.group.groupId), applyChanges(data, reviews).agencies),
                 evidence: { reference: '지급 배치 ' + batch + ' (모의)', finding: '팀 승인 ' + ready.length + '건 일괄 반영' } }]);
           }
+          return true;
         });
+        if (!updated) return send(409, '화면을 새로 열어 현재 처리 단계를 확인해 주세요.');
         return redirect({ view: 'accounting' });
       }
-      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_items', 'ai_reply', 'ai_conditions'].includes(action)) {
-        if (action === 'document_add' ? role !== '대리점' : action === 'ai_conditions' ? role !== roles[1] : role !== roles[0]) {
+      if (['document_add', 'document_extract', 'document_timeout', 'document_confirm', 'group_confirm', 'account_apply', 'ai_draft', 'ai_items', 'ai_reply', 'ai_conditions', 'ai_summary', 'ai_anomaly'].includes(action)) {
+        if (action === 'document_add' ? role !== '대리점' : ['ai_conditions', 'ai_summary'].includes(action) ? role !== roles[1] : role !== roles[0]) {
           return send(403, '이 업무 역할에서는 처리할 수 없습니다.');
         }
         if (action === 'document_add') {
@@ -430,9 +505,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           });
           return redirect({ view: 'documents', document: id, ...caseContext });
         }
-        if (['document_extract', 'document_timeout', 'ai_draft', 'ai_items', 'ai_reply', 'ai_conditions'].includes(action)) {
-          const kind = { ai_draft: 'draft', ai_items: 'items', ai_reply: 'reply_check', ai_conditions: 'conditions' }[action] ?? 'extract';
-          const groupCall = kind !== 'extract';
+        if (['document_extract', 'document_timeout', 'ai_draft', 'ai_items', 'ai_reply', 'ai_conditions', 'ai_summary', 'ai_anomaly'].includes(action)) {
+          const kind = { ai_draft: 'draft', ai_items: 'items', ai_reply: 'reply_check', ai_conditions: 'conditions', ai_summary: 'review_summary', ai_anomaly: 'anomaly_note' }[action] ?? 'extract';
+          const groupCall = !['extract', 'anomaly_note'].includes(kind);
           const draft = kind === 'draft';
           const decision = rows.find(row => row.group_id === groupId);
           const state = progressFor(item).state;
@@ -446,6 +521,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             items: () => !item || state !== 'draft' || !Object.keys(itemBasis(item, activeItems)).length,
             reply_check: () => !item || state !== 'received' || !answer,
             conditions: () => !item || !Object.keys(allowed).length || !(item.exceedsLimit || isAffected(item)),
+            review_summary: () => !item,
+            anomaly_note: () => !anomalyFacts(list).length,
             extract: () => !document,
           }[kind]();
           if (unavailable) return send(409, '현재 단계에서 사용할 수 없습니다.');
@@ -453,13 +530,13 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (timeoutCheck && !Object.values(documentSamples(data)).some(([, text]) => text === document.original)) {
             return send(400, '작성 양식으로 접수한 서류만 연결을 확인할 수 있습니다.');
           }
-          const sharedDeposits = groupCall ? item.collectionEvidence.filter(entry =>
+          const sharedDeposits = groupCall && item ? item.collectionEvidence.filter(entry =>
             new Set(entry.deposits.map(row => row.agencyId)).size > 1) : [];
           const agencyAccounts = new Map(applyChanges(data, reviews).agencies.map(row => [row.agency_id, row.bank_account_no]));
           const recipient = groupCall ? groupId : null;
           const recipientDeposits = sharedDeposits.filter(entry => entry.deposits.some(row => row.agencyId === recipient));
           const registration = agencyAccounts.get(recipient);
-          const groupFacts = groupCall ? {
+          const groupFacts = groupCall && item ? {
             agencies: item.group.members.map(member => member.agencyId),
             matches: item.group.links.map(entry => ({ agencies: entry.agencyIds, fields: entry.matchedFields.map(key => fields[key]) })),
             sharedDeposits: item.collectionEvidence.map(entry => ({
@@ -467,6 +544,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           } : {};
           const input = {
             extract: () => ({ text: document.original }),
+            review_summary: () => ({ facts: summaryFacts(item) }),
+            anomaly_note: () => ({ facts: anomalyFacts(list) }),
             reply_check: () => {
               const asked = requestItems(groupEvents, groupId);
               return { criteria: asked.map(({ id, label, format, attachment }) => ({ id, label, format, attachment })),
@@ -484,8 +563,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
                 registration !== 'NONE' && recipientDeposits.some(entry => entry.account !== registration) } }),
           }[kind]();
           const callId = await transaction(pool, period, async db => {
-            const keys = [period, groupCall ? null : document.id, groupCall ? groupId : null, kind];
-            const pending = await db.query(`SELECT id FROM w07_ai_call WHERE period=$1
+            const keys = [period, groupCall || !document ? null : document.id, groupCall ? groupId : null, kind];
+            const pending = await db.query(`SELECT id FROM w07_ai_call WHERE period=$1 AND archived_at IS NULL
               AND document_id IS NOT DISTINCT FROM $2::bigint AND group_id IS NOT DISTINCT FROM $3::text
               AND kind=$4 AND finished_at IS NULL AND created_at > now() - interval '30 seconds'`, keys);
             if (pending.rowCount) return null;
@@ -497,6 +576,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             const output = await assistant(kind, input, timeoutCheck ? { timeout: 1 } : undefined);
             const result = !output.result ? null
               : kind === 'reply_check' ? withRecipients(output.result, groupEvents)
+              : kind === 'review_summary' ? { ...output.result, basis: factsKey(input.facts) }
+              : kind === 'anomaly_note' ? { ...output.result, basis: factsKey(input.facts) }
                 : kind === 'conditions' ? { ...output.result, basis: conditionsKey(item) } : output.result;
             await pool.query('UPDATE w07_ai_call SET request=$2,raw=$3,result=$4,finished_at=now() WHERE id=$1',
               [callId, JSON.stringify(output.request), JSON.stringify(output.raw ?? null), result]);
@@ -505,7 +586,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
                 ON CONFLICT DO NOTHING`, ['p' + callId, result.newItem]);
             }
           }
-          return redirect(groupCall ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
+          return redirect(kind === 'anomaly_note' ? { view: 'requests', group: '' } : groupCall ? { group: groupId } : { view: 'documents', document: document.id, ...caseContext });
         }
         if (!document) return send(404, '접수 서류를 찾을 수 없습니다.');
         const error = await transaction(pool, period, async db => {
@@ -557,13 +638,13 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           ? redirect({ view: 'documents', document: document.id, ...caseContext }, '#document-confirmation')
           : redirect({ view: 'review', ...caseContext });
       }
-      if (!item && !['reset', 'bulk_approve'].includes(action)) return send(400, '잘못된 요청입니다.');
+      if (!item && !['reset', 'bulk_approve', 'bulk_hold', 'bulk_reject'].includes(action)) return send(400, '잘못된 요청입니다.');
       if (action === 'reset' && role !== roles[4]) return send(403, '초기화는 관리자만 할 수 있습니다.');
       const error = await transaction(pool, period, async db => {
         if (action === 'reset') {
           if (role !== roles[4]) return 403;
           if (form.get('confirm') !== period + ' 초기화') return 400;
-          await db.query('DELETE FROM w07_ai_call WHERE period = $1', [period]);
+          await db.query('UPDATE w07_ai_call SET archived_at = now(), document_id = NULL WHERE period = $1 AND archived_at IS NULL', [period]);
           await db.query('DELETE FROM w07_review WHERE period = $1', [period]);
           await db.query('DELETE FROM w07_document WHERE period = $1', [period]);
           await db.query('DELETE FROM w07_event WHERE period = $1', [period]);
@@ -571,13 +652,32 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           return;
         }
         const { rows: currentReviews } = await db.query('SELECT * FROM w07_review WHERE period=$1 ORDER BY id', [period]);
+        if (['bulk_hold', 'bulk_reject'].includes(action)) {
+          if (role !== roles[0]) return 403;
+          const picked = [...new Set(form.getAll('request'))];
+          if (!picked.length) return { status: 400, message: '보류하거나 반려할 건을 골라 주세요.' };
+          if (action === 'bulk_reject' && !reason) return { status: 400, message: '반려 사유를 적어 주세요. 거래처 담당 영업에게 그대로 전달돼요.' };
+          const { rows: currentDecisions } = await db.query('SELECT group_id FROM w07_decision WHERE period=$1', [period]);
+          const { rows: teamEvents } = await db.query("SELECT group_id, action FROM w07_event WHERE period=$1 AND action IN ('team_hold','team_reject','team_release') ORDER BY id", [period]);
+          for (const id of picked) {
+            const target = originalList.find(entry => entry.group.groupId === id);
+            const last = teamEvents.filter(event => event.group_id === id).at(-1)?.action;
+            if (!target || target.exceedsLimit || approverOf(target) !== roles[0] || currentDecisions.some(row => row.group_id === id) || last === 'team_reject') return 409;
+            await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,$4,$5,$6)`,
+              [period, id, role, action === 'bulk_hold' ? 'team_hold' : 'team_reject', reason || '보류', metadata]);
+          }
+          return;
+        }
         if (action === 'bulk_approve') {
           const { rows: currentDecisions } = await db.query('SELECT group_id FROM w07_decision WHERE period=$1', [period]);
+          const { rows: teamEvents } = await db.query("SELECT group_id, action FROM w07_event WHERE period=$1 AND action IN ('team_hold','team_reject','team_release') ORDER BY id", [period]);
+          const parked = form.getAll('request').filter(id => ['team_hold', 'team_reject'].includes(teamEvents.filter(event => event.group_id === id).at(-1)?.action));
+          if (parked.length) return { status: 409, message: '보류나 반려한 건은 바로 승인할 수 없어요. 보류를 먼저 풀어 주세요.' };
           return approveSupportRequests({
             role, ids: form.getAll('request'), requests: originalList.map(entry => ({ ...entry, approver: approverOf(entry) })),
             savedIds: new Set(currentDecisions.map(row => row.group_id)),
             affected: new Set(currentReviews.flatMap(review => review.details.scope.agencies)),
-            approve: id => saveDecision(db, period, id, role, 'approve', '', [], decisionSnapshot(originalList.find(entry => entry.group.groupId === id))),
+            approve: id => saveDecision(db, period, id, role, 'approve', '', [], { ...decisionSnapshot(originalList.find(entry => entry.group.groupId === id)), occurredOn: metadata.occurredOn }),
           });
         }
         const review = latestReview(currentReviews, item);
@@ -590,8 +690,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         const recipient = currentEvents.findLast(event => ['send', 'resend'].includes(event.action));
         const currentItems = requestItems(currentEvents, groupId);
         if (action === 'reply' && (!recipient || !recipientsOf(currentEvents, groupId).includes(agency))) return 403;
-        if (['dispute', 'remind', 'ack'].includes(action)) {
+        if (['dispute', 'remind', 'ack', 'team_release'].includes(action)) {
           if (role !== roles[0]) return 403;
+          if (action === 'team_release') {
+            if (currentEvents.filter(event => ['team_hold', 'team_reject', 'team_release'].includes(event.action)).at(-1)?.action !== 'team_hold') return 409;
+            await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,'team_release',$4,$5)`,
+              [period, groupId, role, reason || '보류 해제', metadata]);
+            return;
+          }
           if (action === 'dispute') {
             const last = currentEvents.filter(event => ['dispute', 'dispute_close'].includes(event.action)).at(-1);
             if (last?.action === 'dispute') return 409;
@@ -626,11 +732,27 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             VALUES ($1,$2,$3,'condition_check',$4,$5)`, [...ids, role, reason, { ...metadata, condition }]);
           return;
         }
+        const agencyNamesFor = agencyId => data.agencies.find(row => row.agency_id === agencyId)?.agency_name ?? agencyId;
+        if (['payee_resolve', 'payee_change_request'].includes(action)) {
+          if (role !== roles[2]) return 403;
+          if (!['paymentPending', 'repayReady'].includes(state)) return 409;
+          const target = form.get('agencyId');
+          const payee = payeePlan(item, currentEvents, applyChanges(data, currentReviews).agencies).find(row => row.agencyId === target);
+          if (!payee || payee.status !== 'mismatch') return 409;
+          if (action === 'payee_resolve' && !reason) return { status: 400, message: '등록 계좌로 지급하는 이유를 적어 주세요.' };
+          await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,agency_id,metadata)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)`, [...ids, role, action,
+            reason || agencyNamesFor(target) + ' 정산계좌 변경 신청 요청', target, { ...metadata, agencyId: target }]);
+          return;
+        }
         if (action === 'payment') {
           const confirmed = confirmedConditions(record, currentEvents);
-          if ((record?.conditions ?? []).some(condition => !confirmed.has(condition))) return 409;
+          const missing = (record?.conditions ?? []).filter(condition => !confirmed.has(condition));
+          if (missing.length) return { status: 409, message: '아직 확인하지 않은 승인 조건이 있어요: ' + missing.map(id => conditionCatalog[id] ?? id).join(', ') };
           const payees = payeePlan(item, currentEvents, applyChanges(data, currentReviews).agencies);
-          if (payees.some(row => row.status === 'mismatch')) return 422;
+          const blocked = payees.filter(row => row.status === 'mismatch');
+          if (blocked.length) return { status: 422, message: blocked.map(row => agencyNamesFor(row.agencyId)).join(', ') +
+            '의 받을 계좌가 등록 정산계좌와 달라요. 등록 계좌로 지급할지, 변경 요청을 보낼지 먼저 골라 주세요.' };
           metadata.payees = payees;
         }
         if (Object.hasOwn(decisions, action)) {
@@ -642,10 +764,10 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (held) {
             if (state !== 'resubmitted') return 409;
             if (action === 'approve') {
-              if (!record) await saveDecision(db, period, groupId, role, action, reason, conditions, decisionSnapshot(item));
+              if (!record) await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata.occurredOn });
               else if (record.action !== 'approve') {
-                await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,acted_at)
-                  VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
+                await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,acted_at,metadata)
+                  VALUES ($1,$2,$3,$4,$5,$6,$7)`, [...ids, record.role, record.action, record.reason, record.acted_at, { occurredOn: record.snapshot?.occurredOn ?? null }]);
                 await db.query(`UPDATE w07_decision SET role=$3, action='approve', reason=$4, acted_at=now(), snapshot=$5
                   WHERE period=$1 AND group_id=$2`, [...ids, role, reason, decisionSnapshot(item)]);
                 await db.query('INSERT INTO w07_accounting_task (period,group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', ids);
@@ -657,7 +779,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             return;
           }
           if (record) return 409;
-          await saveDecision(db, period, groupId, role, action, reason, conditions, decisionSnapshot(item));
+          await saveDecision(db, period, groupId, role, action, reason, conditions, { ...decisionSnapshot(item), occurredOn: metadata.occurredOn });
           return;
         }
         let stepMetadata = {};
@@ -676,18 +798,23 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         }
         if (action === 'resend' && state === 'received' && role === roles[0]) {
           const answerEvent = currentEvents.findLast(event => event.action === 'reply');
-          const { rows: [lastCheck] } = await db.query(`SELECT result FROM w07_ai_call WHERE period=$1 AND group_id=$2
+          const { rows: [lastCheck] } = await db.query(`SELECT result FROM w07_ai_call WHERE period=$1 AND archived_at IS NULL AND group_id=$2
             AND kind='reply_check' AND result->>'replyId' = $3 ORDER BY id DESC LIMIT 1`, [period, groupId, String(answerEvent?.id)]);
-          const narrowed = resendItems(currentItems, mergedAnswers(currentEvents), lastCheck?.result?.items ?? []);
+          const picked = form.getAll('target').map(value => String(value).split(':'));
+          const narrowed = form.get('picked') === '1'
+            ? currentItems.map(item => ({ ...item, recipients: item.recipients.filter(agencyId =>
+              picked.some(([itemId, target]) => itemId === item.id && target === agencyId)) })).filter(item => item.recipients.length)
+            : resendItems(currentItems, mergedAnswers(currentEvents), lastCheck?.result?.items ?? []);
+          if (!narrowed.length) return { status: 400, message: '보완 요청을 보낼 거래처를 하나 이상 골라 주세요.' };
           const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(form.get('dueDate') ?? '') ? form.get('dueDate') : recipient?.metadata?.dueDate ?? null;
-          if (!narrowed.length) return 409;
           stepMetadata = { items: narrowed, dueDate };
           reason = reason || resendText(narrowed);
         }
         if (action === 'reply' && role === roles[3]) {
           const mine = currentItems.filter(row => row.recipients.includes(agency));
           const composed = composeReply(form, mine);
-          if (!composed.text) return 400;
+          if (composed.errors.length) return { status: 400, message: composed.errors.join(' ') };
+          if (!composed.text) return { status: 400, message: '답변할 항목을 하나 이상 입력해 주세요.' };
           reason = composed.text;
           stepMetadata = { answers: composed.answers };
         }
@@ -714,14 +841,14 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         const invalid = followupError(action, state, role, reason);
         if (invalid) return invalid;
         if (action === 'resubmit' && !held) {
-          await db.query(`INSERT INTO w07_event (period, group_id, role, action, reason, acted_at)
-            VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
+          await db.query(`INSERT INTO w07_event (period, group_id, role, action, reason, acted_at, metadata)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)`, [...ids, record.role, record.action, record.reason, record.acted_at, { occurredOn: record.snapshot?.occurredOn ?? null }]);
           await db.query('DELETE FROM w07_decision WHERE period = $1 AND group_id = $2', ids);
         }
         let eventMetadata = { ...metadata, ...stepMetadata };
         if (['resend', 'verify'].includes(action)) {
           const answer = currentEvents.findLast(event => event.action === 'reply');
-          const { rows: [check] } = await db.query(`SELECT id, result FROM w07_ai_call WHERE period=$1 AND group_id=$2
+          const { rows: [check] } = await db.query(`SELECT id, result FROM w07_ai_call WHERE period=$1 AND archived_at IS NULL AND group_id=$2
             AND kind='reply_check' AND result->>'replyId' = $3 ORDER BY id DESC LIMIT 1`, [...ids, String(answer?.id)]);
           if (check?.result?.items) {
             eventMetadata = { ...eventMetadata, ai: { callId: String(check.id), recommendation: check.result.recommendation,
@@ -735,14 +862,15 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             action === 'reply' ? agency : null, eventMetadata]);
         if (action === 'verify' && form.get('resubmit') === '1') {
           if (!held) {
-            await db.query(`INSERT INTO w07_event (period, group_id, role, action, reason, acted_at)
-              VALUES ($1,$2,$3,$4,$5,$6)`, [...ids, record.role, record.action, record.reason, record.acted_at]);
+            await db.query(`INSERT INTO w07_event (period, group_id, role, action, reason, acted_at, metadata)
+              VALUES ($1,$2,$3,$4,$5,$6,$7)`, [...ids, record.role, record.action, record.reason, record.acted_at, { occurredOn: record.snapshot?.occurredOn ?? null }]);
             await db.query('DELETE FROM w07_decision WHERE period = $1 AND group_id = $2', ids);
           }
           await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,review_id,metadata)
             VALUES ($1,$2,$3,'resubmit',$4,$5,$6)`, [...ids, role, '임원에게 다시 올림', review?.id ?? null, metadata]);
         }
       });
+      if (error?.status) return send(error.status, error.message);
       if (error) return send(error, {
         400: '필요한 내용이나 사유를 1~1,000자로 입력해 주세요.',
         403: '현재 업무 역할에 해당 작업 권한이 없습니다.',
@@ -762,7 +890,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       const done = auditEvents(entry.groupId).findLast(event => event.action === 'post_audit_done');
       const check = auditEvents(entry.groupId).findLast(event => event.action === 'audit_master_check');
       return { ...entry, conclusion: done?.metadata?.conclusion ?? null, doneAt: done?.acted_at, opinion: done?.reason,
-        masterCheck: check?.metadata?.result ?? null, masterCheckNote: check?.reason ?? '', concludedUnverified: done?.metadata?.masterCheck === 'unverified',
+        masterCheck: check?.metadata?.result ?? null, masterCheckNote: check?.reason ?? '', masterCheckOn: check?.metadata?.occurredOn ?? (check ? time(check.acted_at) : ''), doneOn: done?.metadata?.occurredOn ?? '', concludedUnverified: done?.metadata?.masterCheck === 'unverified',
         recoveryDone: auditEvents(entry.groupId).findLast(event => event.action === 'recovery_done') ?? null };
     });
     const decisionReason = entry => {
@@ -773,6 +901,13 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       return (record && ['reject', 'clarify'].includes(record.action) ? record.reason : '') || archived?.reason ||
         latestReview(reviews, entry)?.details.reason || '';
     };
+    // 지난 결정 업무일: 결정 기록이나 보관된 결정 이벤트에 남긴 가상 업무일
+    const decisionDate = entry => {
+      const id = entry.group.groupId;
+      const record = saved.get(id);
+      if (record && ['reject', 'clarify'].includes(record.action)) return record.snapshot?.occurredOn ?? '';
+      return eventsFor(id).findLast(event => ['reject', 'clarify', 'review_reject', 'review_clarify'].includes(event.action))?.metadata?.occurredOn ?? '';
+    };
     const execDue = entry => isAffected(entry) ? stateFor(entry) === 'resubmitted' : (entry.exceedsLimit || precheck.has(entry.group.groupId)) && !saved.has(entry.group.groupId);
     // 가상 업무일: 기준일 2026-07-01부터 시작해 이 정산월 기록의 마지막 업무 발생일을 이어받는다(실제 오늘 날짜를 쓰지 않음).
     const businessDate = [BASE_DATE, ...events.map(event => event.metadata?.occurredOn), ...snapshot.documents.map(row => row.metadata?.occurredOn)]
@@ -782,13 +917,23 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       calls, reviews, catalog, activeItems, item, groupId, agency, document, past, agencyNames,
       documents, allDocuments: snapshot.documents, allEvents: snapshot.allEvents ?? events,
       link: extras => link(extras), isOpenPeriod: month => isOpenPeriod(data.rebates, month),
-      precheck, selectable: entry => open && approverOf(entry) === roles[0] && !entry.exceedsLimit && !isAffected(entry) && !saved.has(entry.group.groupId),
-      decisionReason, execDue, latestReplyCheck, basisFor, pastConclusion: pastConclusionFor,
+      precheck, teamState, selectable: entry => open && approverOf(entry) === roles[0] && !entry.exceedsLimit && !isAffected(entry) && !saved.has(entry.group.groupId) && !teamState(entry),
+      decisionReason, decisionDate, execDue, latestReplyCheck, basisFor, pastConclusion: pastConclusionFor,
       itemBasis: entry => itemBasis(entry, activeItems),
       previousMetadata: entry => eventsFor(entry.group.groupId).findLast(event => event.metadata?.occurredOn)?.metadata,
       conditionCall: entry => {
         const latest = calls.filter(call => call.kind === 'conditions' && call.group_id === entry.group.groupId).at(-1);
         return latest && (!latest.finished_at || !latest.result || latest.result.basis === conditionsKey(entry)) ? latest : null;
+      },
+      summaryFacts,
+      summaryCall: entry => {
+        const latest = calls.filter(call => call.kind === 'review_summary' && call.group_id === entry.group.groupId).at(-1);
+        return latest && (!latest.finished_at || !latest.result || latest.result.basis === factsKey(summaryFacts(entry))) ? latest : null;
+      },
+      anomalies: () => anomalyFacts(list),
+      anomalyCall: () => {
+        const latest = calls.filter(call => call.kind === 'anomaly_note').at(-1);
+        return latest && (!latest.finished_at || !latest.result || latest.result.basis === factsKey(anomalyFacts(list))) ? latest : null;
       },
       recipientsFor: entry => recipientsOf(eventsFor(entry.group.groupId), entry.group.groupId),
       currentAgency: id => changedData.agencies.find(row => row.agency_id === id),
@@ -863,7 +1008,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       });
     }
     const flash = { sent: '보냈어요', saved: '저장했어요' }[query.get('done')];
-    send(200, shell({ title, subtitle, nav, role, period, periods, periodLink: view, wide: ['requests', 'ai-log', 'catalog'].includes(view) && !item,
+    send(200, shell({ title, subtitle, nav, role, period,
+      roleLink: '/?' + new URLSearchParams({ view: 'roles', period,
+        ...(item || continued ? { case: (item ?? continued).group.groupId } : {}) }), periods, periodLink: view, wide: ['requests', 'ai-log', 'catalog'].includes(view) && !item,
       notifications, content: (flash ? '<p class="flash" role="status">' + flash + '</p>' : '') + content }));
   };
 }

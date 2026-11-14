@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { sourceDirectory } from './fixtures/source-directory.mjs';
 import { applyChanges, callAssistant, documentSamples, individualExceedance, isOpenPeriod, reviewScope, samples } from '../src/condition.mjs';
 import { calculateW07, readW07Data } from '../src/w07.mjs';
 import { conditionBasis, conditionCatalog, pastExceedances, replyCriteria, validateReplyCheck } from '../src/controls.mjs';
@@ -32,7 +32,7 @@ test('AI candidates require source text and flag omitted or conflicting values',
 });
 
 test('June account change preserves original data and finds earlier paid approvals', async () => {
-  const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+  const data = await readW07Data(sourceDirectory);
   const before = calculateW07(data);
   assert.equal(isOpenPeriod(data.rebates, '2026-06'), true);
   for (const month of ['01', '02', '03', '04', '05']) {
@@ -84,7 +84,7 @@ test('reply check keeps only verdicts grounded in the reply and recommends a res
 });
 
 test('condition proposals stay inside the evidence-based catalog and past exceedances come from paid support approvals', async () => {
-  const data = await readW07Data(fileURLToPath(new URL('../01_참가자_배포용/04_원본데이터/', import.meta.url)));
+  const data = await readW07Data(sourceDirectory);
   const result = calculateW07(data);
   const june = result.requests.find(row => row.period === '2026-06' && row.group.groupId === 'D-011');
   const basis = conditionBasis(june);

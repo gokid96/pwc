@@ -1,24 +1,23 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import pg from 'pg';
-import { createWorkflow } from './workflow.mjs';
+import { createDemoWorkflow } from './demo-session.mjs';
 import { calculateW07, loadW07Data } from './w07.mjs';
 
 const env = process.env;
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
-const object = { Bucket: env.STORAGE_BUCKET, Key: 'w07/source-csvs.json' };
-const s3 = new S3Client({
-  endpoint: env.STORAGE_ENDPOINT,
-  region: 'auto',
-  forcePathStyle: true,
-  credentials: {
-    accessKeyId: env.STORAGE_ACCESS_KEY,
-    secretAccessKey: env.STORAGE_SECRET_KEY,
-  },
-  requestChecksumCalculation: 'WHEN_REQUIRED',
-  responseChecksumValidation: 'WHEN_REQUIRED',
-});
+let sourceSchema;
+function ensureSourceTable() {
+  sourceSchema ??= pool.query(`CREATE TABLE IF NOT EXISTS public.w07_source_data (
+    singleton boolean PRIMARY KEY CHECK (singleton),
+    payload jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(error => {
+    sourceSchema = undefined;
+    throw error;
+  });
+  return sourceSchema;
+}
 
 function json(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -54,11 +53,13 @@ function readSources(sources) {
 }
 
 async function readStoredData() {
-  const { Body } = await s3.send(new GetObjectCommand(object));
-  return readSources(JSON.parse(await Body.transformToString('utf-8')));
+  await ensureSourceTable();
+  const { rows } = await pool.query('SELECT payload FROM public.w07_source_data WHERE singleton');
+  if (!rows.length) throw new Error('W07 source data has not been loaded');
+  return readSources(rows[0].payload);
 }
 
-const workflow = createWorkflow(pool, readStoredData, calculateW07);
+const workflow = createDemoWorkflow(pool, readStoredData, calculateW07, env.CONNECTION_CHECK_TOKEN);
 
 const server = createServer(async (request, response) => {
   const path = request.url?.split('?')[0];
@@ -82,7 +83,9 @@ const server = createServer(async (request, response) => {
       } catch {
         return json(response, 400, { error: 'Invalid source data' });
       }
-      await s3.send(new PutObjectCommand({ ...object, Body: body, ContentType: 'application/json' }));
+      await ensureSourceTable();
+      await pool.query(`INSERT INTO public.w07_source_data (singleton, payload) VALUES (true, $1)
+        ON CONFLICT (singleton) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`, [body.toString('utf8')]);
       return json(response, 200, { stored: true, ...summary });
     }
     if (request.method === 'GET' && path === '/api/w07/2026-06') {
