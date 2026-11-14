@@ -2,7 +2,7 @@ import { inputMetadata, paymentEvidence, summaryBasis } from './audit.mjs';
 import { steps, labels, requestProgress, followupError } from './followup.mjs';
 import { applyChanges, callAssistant, documentSamples, fields, individualExceedance, isOpenPeriod, reviewScope } from './condition.mjs';
 import { conditionBasis, conditionCatalog, confirmedConditions, itemBasis, masterCheckResults, pastExceedances, pct, postAuditConclusions, precheckGroups, rateAnomaly, rebateRates, recommendationLabels, replyCriteria, verdictLabels } from './controls.mjs';
-import { buildRequestItems, composeReply, decisionSnapshot, effectiveCatalog, payeePlan, mergedAnswers, recipientsOf, replyText, requestItems, resendItems, resendText } from './requests.mjs';
+import { accountInput, buildRequestItems, composeReply, decisionSnapshot, effectiveCatalog, payeePlan, mergedAnswers, recipientsOf, replyText, requestItems, resendItems, resendText } from './requests.mjs';
 import * as screens from './screens.mjs';
 import { BASE_DATE, shell, styles as uiStyles } from './ui.mjs';
 import { approveSupportRequests } from './bulk-approval.mjs';
@@ -10,7 +10,7 @@ import { approveSupportRequests } from './bulk-approval.mjs';
 const roles = ['영업지원팀', '영업임원', '회계', '대리점', '관리자'];
 const roleDescriptions = [
   '팀 승인, 거래처 확인 요청, 서류 확인을 처리합니다.',
-  '한도를 넘는 묶음의 근거를 보고 승인·거절을 결정합니다.',
+  '한도를 넘는 묶음의 근거를 보고 승인 여부를 결정합니다.',
   '승인 조건을 확인하고 지급 시스템에 반영합니다.',
   '거래처 확인 요청에 답변하고 서류를 제출합니다.',
   'AI 사용 기록, 확인 항목 목록, 묶음 이의 제기를 관리합니다.',
@@ -25,7 +25,7 @@ const roleViews = [
 const decisions = { approve: '승인', reject: '거절', clarify: '추가 확인 요청' };
 const eventLabels = {
   document_received: '서류 접수', account_changed: '계좌 변경 적용',
-  review_approve: '재검토 승인 · 보류 해제', review_reject: '재검토 거절', review_clarify: '재검토 추가 확인 요청',
+  review_approve: '재검토 승인, 보류 해제', review_reject: '재검토 거절', review_clarify: '재검토 추가 확인 요청',
   condition_check: '승인 조건 확인', post_audit: '사후 검토 요청', post_audit_done: '사후 검토 의견',
 };
 const money = amount => new Intl.NumberFormat('ko-KR').format(amount) + '원';
@@ -291,7 +291,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         }).end();
         return;
       }
-      return send(200, entryPage('대리점 포털 · 거래처 선택', '<p class="muted">실제 서비스에서는 거래처 계정으로 로그인해요. 시연용으로 거래처를 골라 주세요.</p><div class="role-cards">' + data.agencies.map(row =>
+      return send(200, entryPage('대리점 포털 거래처 선택', '<p class="muted">실제 서비스에서는 거래처 계정으로 로그인해요. 시연용으로 거래처를 골라 주세요.</p><div class="role-cards">' + data.agencies.map(row =>
         '<form method="post" action="' + link({ ...roleContext, dealer: row.agency_id }) + '"><button style="min-height:56px"><strong>' +
         escape(row.agency_name) + '</strong><small>' + escape(row.agency_id) + '</small></button></form>').join('') + '</div>'));
     }
@@ -343,10 +343,10 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         return 'B-' + day + '-' + String(used.size + 1).padStart(2, '0');
       };
       if (['document_add', 'account_apply', 'group_confirm', 'condition_check', ...Object.keys(steps)].includes(action) && !metadata)
-        return send(400, '업무 발생일·적용일·적용 정산월을 확인해 주세요.');
+        return send(400, '업무 발생일, 적용일, 적용 정산월을 확인해 주세요.');
       if (['payment', 'condition_check'].includes(action)) {
         const evidence = paymentEvidence(form) ?? (action === 'payment' ? { reference: '지급 배치 ' + batchId(metadata?.occurredOn) + ' (모의)', finding: '승인 조건 확인 후 지급 시스템 반영(모의)' } : null);
-        if (!evidence) return send(400, '확인한 자료의 이름·위치와 수취계좌·명의 등 확인 내용을 입력해 주세요.');
+        if (!evidence) return send(400, '확인한 자료의 이름과 확인 결과를 입력해 주세요.');
         metadata.evidence = evidence;
         reason = evidence.finding;
       }
@@ -439,7 +439,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (ready.some(entry => revisions.get(entry.group.groupId) !== eventsFor(entry.group.groupId).at(-1)?.id)) return false;
           for (const entry of ready) {
             await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,'payment_ok',$4,$5)`,
-              [period, entry.group.groupId, role, '은행 회신(모의) · 전부 지급', { ...(metadata ?? {}), mock: true,
+              [period, entry.group.groupId, role, '은행 회신(모의), 전부 지급', { ...(metadata ?? {}), mock: true,
                 results: Object.fromEntries(entry.group.members.map(member => [member.agencyId, { result: 'success' }])) }]);
           }
           return true;
@@ -464,7 +464,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           if (ready.some(entry => revisions.get(entry.group.groupId) !== eventsFor(entry.group.groupId).at(-1)?.id)) return false;
           for (const entry of ready) {
             await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,metadata) VALUES ($1,$2,$3,'payment',$4,$5)`,
-              [period, entry.group.groupId, role, '팀 승인 일괄 반영 · ' + batch, { batch, mock: true,
+              [period, entry.group.groupId, role, '팀 승인 일괄 반영, ' + batch, { batch, mock: true,
                 payees: payeePlan(entry, eventsFor(entry.group.groupId), applyChanges(data, reviews).agencies),
                 evidence: { reference: '지급 배치 ' + batch + ' (모의)', finding: '팀 승인 ' + ready.length + '건 일괄 반영' } }]);
           }
@@ -480,7 +480,9 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         if (action === 'document_add') {
           const info = applyChanges(data, reviews).agencies.find(row => row.agency_id === agency);
           const kind = form.get('kind');
-          const newValue = (form.get('newValue') ?? '').trim();
+          const typedAccount = kind === 'account' && form.has('bank_new') ? accountInput(form.get('bank_new'), form.get('acc_new'), form.get('holder_new') || '-') : null;
+          if (typedAccount?.errors.length) return send(400, typedAccount.errors.join(' '));
+          const newValue = typedAccount ? typedAccount.account : (form.get('newValue') ?? '').trim();
           const composed = info && ['account', 'address', 'representative'].includes(kind) && newValue && (form.get('why') ?? '').trim()
             ? ['등록 정보 변경 신청서 (' + { account: '정산계좌', address: '사업장 주소', representative: '대표자' }[kind] + ')',
               '거래처명: ' + info.agency_name + ' (' + agency + ')',
@@ -630,7 +632,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             const target = list.find(entry => entry.group.members.some(member => member.agencyId === stored.agency_id));
             if (target) await db.query(`INSERT INTO w07_event (period,group_id,role,action,reason,agency_id,metadata)
               VALUES ($1,$2,$3,'account_changed',$4,$5,$6)`,
-              [period, target.group.groupId, role, '접수 번호 ' + stored.id + ' · ' + stored.confirmed.reason, stored.agency_id, metadata]);
+              [period, target.group.groupId, role, '접수 번호 ' + stored.id + ', ' + stored.confirmed.reason, stored.agency_id, metadata]);
           }
         });
         if (error) return send(error, '확인 값과 현재 처리 단계를 다시 확인해 주세요.');
@@ -793,7 +795,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           stepMetadata = { items: chosen, dueDate, ...(proposal ? { ai: { callId: String(proposal.id), proposed,
             agreed: proposed.length === ids.length && proposed.every(id => ids.includes(id)) && !form.get('customItem')?.trim() } } : {}) };
           const message = reason;
-          reason = '확인 항목: ' + chosen.map((row, index) => (index + 1) + ') ' + row.label).join(' ') + ' · 기한 ' + dueDate +
+          reason = '확인 항목: ' + chosen.map((row, index) => (index + 1) + ') ' + row.label).join(' ') + ', 기한 ' + dueDate +
             (message ? '\n' + message : '');
         }
         if (action === 'resend' && state === 'received' && role === roles[0]) {
@@ -820,7 +822,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
         }
         if (action === 'verify' && !reason) reason = '거래처 답변 확인 완료';
         if (['payment_ok', 'payment_returned'].includes(action)) {
-          const reasons = { holder: '예금주 불일치', closed: '계좌 해지·없음', other: '기타' };
+          const reasons = { holder: '예금주 불일치', closed: '계좌 해지 또는 없음', other: '기타' };
           const results = {};
           for (const { agencyId } of item.group.members) {
             const result = form.get('result_' + agencyId);
@@ -831,12 +833,12 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           }
           stepMetadata = { results, mock: true };
           const rejected = Object.entries(results).filter(([, row]) => row.result === 'rejected');
-          reason = rejected.length ? '은행 회신(모의) · 반려 ' + rejected.map(([id, row]) => id + ' ' + row.reason).join(', ') : '은행 회신(모의) · 전부 지급';
+          reason = rejected.length ? '은행 회신(모의), 반려 ' + rejected.map(([id, row]) => id + ' ' + row.reason).join(', ') : '은행 회신(모의), 전부 지급';
         }
         if (action === 'payment' && state === 'repayReady') {
           const returned = currentEvents.findLast(event => event.action === 'payment_returned');
           stepMetadata = { repay: Object.entries(returned?.metadata?.results ?? {}).filter(([, row]) => row.result === 'rejected').map(([id]) => id) };
-          reason = '반려분 재지급 반영 · ' + stepMetadata.repay.join(', ');
+          reason = '반려분 재지급 반영, ' + stepMetadata.repay.join(', ');
         }
         const invalid = followupError(action, state, role, reason);
         if (invalid) return invalid;
@@ -874,7 +876,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       if (error) return send(error, {
         400: '필요한 내용이나 사유를 1~1,000자로 입력해 주세요.',
         403: '현재 업무 역할에 해당 작업 권한이 없습니다.',
-        422: '거래처가 답한 받을 계좌가 등록 정산계좌와 달라요. 정산계좌 변경 신청을 먼저 확인·적용해 주세요.',
+        422: '거래처가 답한 받을 계좌가 등록 정산계좌와 달라요. 정산계좌 변경 신청을 먼저 확인하고 적용해 주세요.',
         409: '화면을 새로 열어 현재 처리 단계를 확인해 주세요.',
       }[error]);
       const next = new URLSearchParams({ period, view, ...(item && action !== 'reset' ? { group: groupId } : {}) });
@@ -969,7 +971,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       else if (item && c.recipientsFor(item).includes(agency) && eventsFor(groupId).some(event => ['send', 'resend'].includes(event.action))) [title, content] = ['확인 요청', screens.dealerReply(c, h)];
       else [title, content] = ['홈', screens.dealerHome(c, h)];
     } else {
-      [title, content] = view === 'catalog' ? ['항목·조건 목록', screens.catalogAdmin(c, h)] : ['AI 사용 기록', screens.aiLog(c, h)];
+      [title, content] = view === 'catalog' ? ['확인 항목 목록', screens.catalogAdmin(c, h)] : ['AI 사용 기록', screens.aiLog(c, h)];
     }
 
     const countOf = key => ({
@@ -983,10 +985,10 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
       'ai-log': null, home: null, catalog: catalog.items && Object.values(catalog.items).filter(row => row.status === 'proposed').length || null,
     })[key];
     const menuLabels = { home: '홈', requests: role === roles[1] ? '결정할 요청' : '승인 요청', followup: '거래처 확인 <small>(소명)</small>', documents: role === roles[3] ? '서류' : '서류 확인',
-      review: '정보 변경', 'post-audit': '지난 지급 점검 <small>(사후 검토)</small>', accounting: '지급 검토', 'agency-replies': '홈', 'ai-log': 'AI 사용 기록', catalog: '항목·조건 목록' };
+      review: '정보 변경', 'post-audit': '지난 지급 점검 <small>(사후 검토)</small>', accounting: '지급 검토', 'agency-replies': '홈', 'ai-log': 'AI 사용 기록', catalog: '확인 항목 목록' };
     const nav = roleViews[roleIndex].map(key => [link({ view: key }), menuLabels[key], countOf(key),
       key === view || (key === 'agency-replies' && view === 'agency-replies')]);
-    const subtitle = role === roles[3] ? agencyNames.get(agency) + ' · 대리점 포털' : 'Corevia ' + role;
+    const subtitle = role === roles[3] ? agencyNames.get(agency) + ' 대리점' : 'Corevia ' + role;
     let notifications = null;
     if (role === roles[0]) {
       notifications = events.filter(event => ['reply', 'dispute_close', 'post_audit_done', 'review_reject', 'review_clarify', 'document_received'].includes(event.action))
@@ -996,7 +998,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
           const name = entry ? h.title(entry) : agencyNames.get(event.group_id) ?? event.group_id;
           const text = { reply: name + ' 답변 도착', dispute_close: name + ' 이의 제기 처리됨', post_audit_done: name + ' 지난 지급 점검 결론',
             review_reject: name + ' 임원 재검토 거절', review_clarify: name + ' 임원 추가 확인 요청', document_received: name + ' 서류 접수',
-            reject: name + ' 임원 거절 · 확인 요청 필요', clarify: name + ' 임원 추가 확인 요청' }[event.action];
+            reject: name + ' 임원 거절', clarify: name + ' 임원 추가 확인 요청' }[event.action];
           const href = { reply: link({ view: 'followup', group: event.group_id }), post_audit_done: link({ view: 'post-audit', audit: event.group_id }),
             document_received: link({ view: 'documents' }) }[event.action] ?? link({ view: 'requests', group: event.group_id });
           return [href, escape(text), time(event.acted_at)];

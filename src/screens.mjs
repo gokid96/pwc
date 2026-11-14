@@ -101,7 +101,7 @@ function history(c, entry) {
       (event.action === 'approve' && event.conditions?.length ? '조건부 승인' : labels[event.action] ?? escape(event.action)),
       escape(event.reason).replace(/\n/g, '<br>') + (event.conditions?.length ? '<br><span class="muted">조건: ' +
         event.conditions.map(id => escape(conditionCatalog[id] ?? id)).join(', ') + '</span>' : '') +
-        (event.metadata?.source ? ' <span class="muted">· ' + (event.metadata.source === 'scenario' ? '추가 시나리오 자료' : '가상 회신·직접 입력') + '</span>' : ''),
+        (event.metadata?.source ? ' <span class="muted">(' + (event.metadata.source === 'scenario' ? '추가 시나리오 자료' : '가상 회신, 직접 입력') + ')</span>' : ''),
       '<span class="muted">' + time(event.acted_at) + '</span>']), { empty: '아직 기록이 없어요' }) + '</details>';
 }
 
@@ -281,17 +281,15 @@ export function pastMonthDetail(c, h) {
   const paid = c.data.rebates.filter(row => entry.rebateRows.some(rebate => rebate.rebateId === row.rebate_id));
   const team = paid.every(row => row.approver === '영업지원팀');
   const nextOpen = c.periods.find(month => month > c.period && c.isOpenPeriod(month));
-  return '<div class="card tight line" style="background:#eef2f7;justify-content:space-between;flex-wrap:wrap"><span>🔒 지급이 끝난 ' + Number(c.period.slice(5)) + '월이에요. 보기만 할 수 있어요.</span>' +
-    (nextOpen ? '<a href="/?' + escape(new URLSearchParams({ period: nextOpen, view: 'requests' }).toString()) + '">' + Number(nextOpen.slice(5)) + '월로 가기</a>' : '') + '</div>' +
-    '<div><p class="crumb">승인 요청 › ' + Number(c.period.slice(5)) + '월</p><div class="top" style="align-items:flex-end"><h1>' + escape(h.title(entry)) + '</h1>' +
-    pill('gray', '✓ ' + ([...new Set(paid.map(row => row.payment_date))].join(', ') || '지급 기록 없음')) + '</div></div>' +
-    '<section class="card"><div class="line" style="justify-content:space-between;flex-wrap:wrap;align-items:baseline"><h2>합계 ' + money(entry.totalKrw) + src('calc') + '</h2>' +
-    (entry.exceedsLimit ? '<span style="color:#a12a2a;font-weight:700;font-size:14px">▲ 팀 승인 한도 초과</span>' : '') + '</div>' +
-    (entry.exceedsLimit && team ? '<p class="note warn">' + icon('warn') + ' 임원 승인이 필요했지만 거래처별로 팀 승인되어 지급됐어요.</p>' : '') +
-    '<details style="margin-top:12px"><summary>거래처별 지급 기록 · 원본</summary>' + table(['거래처', '장려금', '승인', '지급일', '자료 위치'], paid.map(row =>
-      [escape(h.name(row.agency_id)), money(Number(row.rebate_amount_krw)), escape(row.approver), escape(row.payment_date), escape(row.source.file + ':' + row.source.row)]), { numeric: [1] }) + '</details></section>' +
-    (entry.exceedsLimit && team && nextOpen ? '<section class="card line" style="justify-content:space-between;flex-wrap:wrap"><span>이 달을 포함한 사례를 회계가 점검해요</span>' +
-      '<a class="btn" href="/?' + escape(new URLSearchParams({ period: nextOpen, view: 'post-audit', audit: entry.group.groupId }).toString()) + '">지난 지급 점검 보기</a></section>' : '');
+  const dates = [...new Set(paid.map(row => row.payment_date))].join(', ');
+  return '<div><p class="crumb"><a href="' + c.link({ view: 'requests' }) + '">승인 요청</a> › ' + escape(c.period) + '</p><div class="top" style="align-items:center"><h1>' + escape(h.title(entry)) + '</h1>' +
+    pill('green', '지급 완료') + '</div></div>' +
+    '<section class="card"><div class="kv" style="font-size:15px"><span>' + Number(c.period.slice(5)) + '월 합계</span><strong style="font-size:22px">' + money(entry.totalKrw) + '</strong>' +
+    '<span>팀 승인 한도</span><span>' + money(LIMIT) + '</span><span>지급일</span><span>' + escape(dates || '기록 없음') + '</span></div></section>' +
+    (entry.group.members.length > 1 ? '<section class="card"><div class="hd"><h2>묶인 거래처</h2></div><div class="agencies">' + paid.map(row =>
+      '<div class="agency" title="원본 ' + escape(row.source.file + ' ' + row.source.row + '행') + '"><span class="muted">' + escape(h.name(row.agency_id)) + '</span><strong>' + money(Number(row.rebate_amount_krw)) + '</strong></div>').join('') + '</div></section>' : '') +
+    (entry.exceedsLimit && team ? '<section class="card line" style="justify-content:space-between;flex-wrap:wrap;background:#fff7e6;border-color:#f3dfb2"><span>임원 승인 대상이었지만 거래처별 팀 승인으로 지급됐어요</span>' +
+      (nextOpen ? '<a class="link" href="/?' + escape(new URLSearchParams({ period: nextOpen, view: 'post-audit', audit: entry.group.groupId }).toString()) + '">지난 지급 점검</a>' : '') + '</section>' : '');
 }
 
 export function followupList(c, h) {
@@ -432,54 +430,63 @@ export function documentDetail(c, h) {
     return candidates.length ? 'accept' : 'reject';
   };
   const changedAccount = cell('bank_account_no') && registered && cell('bank_account_no') !== registered.bank_account_no;
-  return '<div><p class="crumb"><a href="' + c.link({ view: 'documents' }) + '">서류 확인</a> › ' + escape(h.name(doc.agency_id)) + ' · 접수 ' + escape(doc.id) + '</p>' +
-    '<div class="top" style="align-items:flex-end"><h1>' + (changedAccount ? '계좌 변경 신청' : '거래처 서류') + '</h1>' +
-    (doc.applied ? pill('green', '✓ 적용 완료') : doc.confirmed ? pill('blue', '확인 저장') : pill('amber', '! 확인 필요')) + '</div></div>' +
+  const kindName = /변경 신청서 \(([^)]+)\)/.exec(doc.original.split('\n')[0])?.[1];
+  const kind = kindName ? kindName + ' 변경 신청서' : /변경 신청/.test(doc.original.split('\n')[0]) ? '등록 정보 변경 신청서' : '거래처 서류';
+  const regen = h.regen({ view: 'documents', document: doc.id }, 'document_extract', '#compare', '다시 읽기');
+  const aiStatus = extract?.result ? '<span class="ai-b">AI</span>읽은 값, 고쳐도 돼요' : extract?.finished_at ? 'AI가 못 읽었어요. 직접 입력해 주세요' : extract ? 'AI가 읽는 중이에요' : '';
+  const affected = c.list.find(entry => entry.group.members.some(member => member.agencyId === doc.agency_id));
+  return '<div><p class="crumb"><a href="' + c.link({ view: 'documents' }) + '">서류 확인</a> › ' + escape(h.name(doc.agency_id)) + '</p>' +
+    '<div class="top" style="align-items:center"><h1>' + kind + '</h1>' +
+    (doc.applied ? pill('green', '적용 완료') : doc.confirmed ? pill('blue', '확인 저장') : pill('amber', '확인 필요')) + '</div></div>' +
     (canEdit && !extract ? '<form method="post" action="' + post({}) + '" hidden data-ai data-auto data-target="#compare"><button name="action" value="document_extract">AI 읽기</button></form>' : '') +
-    '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><section class="card" style="flex:1 1 280px;background:#fbfbfc;padding:16px" aria-label="서류 원문">' +
-    '<p class="muted" style="margin-bottom:6px">거래처가 보낸 서류' + src('reply', doc.metadata?.source === 'scenario' ? '추가 시나리오' : '가상 회신') + '</p><pre class="doc">' + escape(doc.original) + '</pre><p class="muted" style="margin-top:8px;font-size:12px">' + metadataView(doc.metadata, escape) + '</p></section>' +
-    '<form method="post" action="' + post({}) + '" class="card" id="compare" style="flex:1.3 1 340px"><div class="line" style="justify-content:space-between;flex-wrap:wrap"><h2>등록 정보' + src('raw') + '와 비교</h2><span class="muted" data-ai-status>' +
-    (extract?.result ? 'AI가 읽은 값 · 고쳐도 돼요' : extract?.finished_at ? 'AI가 못 읽었어요 · 직접 입력' : extract ? 'AI가 읽는 중' : '') + '</span></div><div class="rows">' +
+    (canEdit && extract?.finished_at ? regen.form : '') +
+    '<form method="post" action="' + post({}) + '" id="compare" style="display:flex;flex-direction:column;gap:16px">' +
+    '<section class="card"><div class="hd"><h2>등록 정보와 비교</h2><span class="r"><span data-ai-status>' + aiStatus + '</span>' + (canEdit && extract?.finished_at ? regen.button : '') +
+      '<a class="link" href="#original" data-expand="original">원본 보기</a></span></div>' +
+    '<div id="original" hidden style="margin-bottom:12px"><pre class="doc">' + escape(doc.original) + '</pre><p class="muted" style="margin-top:6px;font-size:12px">' + metadataView(doc.metadata, escape) + '</p></div>' +
+    '<div class="row" style="border:0;padding:0 0 6px;color:#526074;font-size:13px"><span style="flex:0 0 80px"></span><span style="flex:1 1 140px">등록</span><span style="flex:1 1 180px">서류</span><span style="flex:0 0 52px"></span></div><div class="rows">' +
     Object.entries(extractFields).map(([key, label]) => {
       const value = cell(key);
       const same = registered && value && value === registered[key];
-      return '<div class="row" style="flex-wrap:wrap"><span style="flex:0 0 70px;font-weight:600">' + escape(label) + '</span><span class="muted" style="flex:1 1 120px">' +
+      return '<div class="row" style="flex-wrap:wrap"><span style="flex:0 0 80px">' + escape(label) + '</span><span class="muted" style="flex:1 1 140px">' +
         escape(key === 'bank_account_no' ? mask(registered?.[key]) : registered?.[key] ?? '') + '</span>' +
-        '<input name="' + key + '" value="' + escape(value) + '" maxlength="200" aria-label="' + escape(label) + ' 서류 값" style="flex:1 1 180px"' + (canEdit ? '' : ' disabled') + '>' +
+        '<input name="' + key + '" value="' + escape(value) + '" maxlength="200" aria-label="' + escape(label) + ' 서류 값" style="flex:1 1 180px;width:auto"' + (canEdit ? '' : ' disabled') + '>' +
         '<input type="hidden" name="' + key + '_decision" value="' + (value ? (extract?.result?.[key]?.candidates?.some(candidate => candidate.value === value) ? 'accept' : 'edit') : 'reject') + '" data-decision="' + decision(key) + '">' +
-        (value ? (same ? icon('ok') : '<span class="tag" style="background:#fff1d6;color:#7a3f00">변경</span>') : '<span class="muted">없음</span>') + '</div>';
-    }).join('') + '</div>' +
-    (changedAccount ? '<div class="note"><strong>적용하면</strong> · 선택한 정산월의 승인 경로와 회계 확인 상태를 다시 검토해요.' +
-      '<details style="margin-top:6px"><summary>왜 이번 달은 그대로인가요?</summary><p class="muted" style="margin-top:4px">확인 요청 중에 계좌만 바꿔 한도를 피하지 못하게 해요. 같은 계좌로 들어온 입금 기록이 있으면 임원 승인 경로를 유지하고, 임원이 다시 결정해요.</p></details></div>' : '') +
-    (canEdit ? '<label class="field" style="margin-top:12px">확인 메모 <input name="reason" value="' + escape(doc.confirmed?.reason ?? '') + '" maxlength="1000" required placeholder="예: 대표자 서명 확인"></label>' +
-      '<div style="margin-top:12px">' + recordFields(c.period, doc.metadata, c.businessDate) + '</div>' +
+        '<span style="flex:0 0 52px;text-align:right">' + (value ? (same ? icon('ok') : pill('red', '변경')) : '<span class="muted">없음</span>') + '</span></div>';
+    }).join('') + '</div></section>' +
+    (changedAccount ? '<section class="card"><div class="hd"><h2>적용하면</h2></div><p>' +
+      (affected ? escape(Number(c.period.slice(5)) + '월은 ' + affected.group.members.map(member => h.name(member.agencyId)).join(', ') + '을 그대로 묶어 판단해요. 다음 달부터 새 계좌로 다시 판단해요.') : '다음 달부터 새 계좌로 판단해요.') + '</p>' +
+      '<p class="muted" style="margin-top:6px">진행 중인 달에 계좌만 바꿔 한도를 피하지 못하게 하려는 규칙이에요.</p></section>' : '') +
+    (canEdit ? '<section class="card"><label class="field">확인 메모 <input name="reason" value="' + escape(doc.confirmed?.reason ?? '') + '" maxlength="1000" required placeholder="예: 대표자 서명 확인"></label>' +
+      '<details style="margin-top:10px"><summary>업무일</summary><div style="margin-top:8px">' + recordFields(c.period, doc.metadata, c.businessDate) + '</div></details>' +
       '<div class="line" style="justify-content:flex-end;flex-wrap:wrap;margin-top:12px"><button name="action" value="document_confirm">' + (doc.confirmed ? '다시 저장' : '확인 저장') + '</button>' +
       (doc.confirmed && changedAccount ? '<button class="primary" name="action" value="account_apply">변경 적용</button>' : '') +
-      (doc.confirmed && !changedAccount ? '<button name="action" value="group_confirm">관련자 묶음 다시 확인</button>' : '') + '</div>' : '') +
-    '</form></div>';
+      (doc.confirmed && !changedAccount ? '<button name="action" value="group_confirm">관련자 묶음 다시 확인</button>' : '') + '</div></section>' : '') +
+    '</form>';
 }
 
 export function reviewList(c, h) {
-  return '<div><h1>정보 변경</h1><p class="muted" style="font-size:14px;margin-top:4px">거래처 정보가 바뀌어 다시 판단해야 하는 요청</p></div>' +
+  const approver = row => row.approver === '영업임원' ? '임원 승인' : '팀 승인';
+  const describe = rows => rows.map(row => row.members.map(h.name).join(', ') + ' ' + money(row.amount) + ' (' + approver(row) + ')').join(' / ');
+  return '<div><h1>정보 변경</h1></div>' +
     (c.reviews.length ? c.reviews.slice().reverse().map(review => {
       const scope = review.details.scope;
       const resolved = c.events.some(event => event.review_id === review.id && event.action === 'review_approve');
-      const before = scope.before.map(row => row.members.map(h.name).join('·') + ' ' + money(row.amount) + ' (' + (row.approver === '영업임원' ? '임원' : '팀 승인') + ')').join(' / ');
-      const after = scope.after.map(row => row.members.map(h.name).join('·') + ' ' + money(row.amount) + ' (' + (row.approver === '영업임원' ? '임원' : '팀 승인') + ')').join(' / ');
       const target = c.list.find(entry => entry.group.members.some(member => scope.agencies.includes(member.agencyId)));
       const [statusColor, statusText] = target ? h.status(target) : ['blue', '재검토 중'];
-      return '<section class="card" id="review-' + escape(review.id) + '"><div class="top"><div><h2>' + escape(h.name(review.agency_id)) + ' ' +
-        (review.kind === 'change' ? '정산계좌 변경' : '관련자 묶음 확인') + '</h2><p class="muted">' + (review.kind === 'change' ? mask(review.details.beforeAccount) + ' → ' + mask(review.details.afterAccount) + ' · ' : '') +
-        escape(review.period) + ' 정산월 · 기록 ' + time(review.created_at) + '</p></div>' + pill(statusColor, statusText) + '</div>' +
-        '<div class="agencies" style="margin-top:14px"><div class="agency"><p class="muted">이번 달</p><strong style="font-size:15px">' +
-        (scope.retained.length ? '지금 묶음 그대로 · 임원 승인' : '새 정보로 다시 판단') + '</strong></div><div class="agency"><p class="muted">변경 정보로 다시 계산한 결과</p><strong style="font-size:15px">' + escape(after) + '</strong></div></div>' +
-        '<details style="margin-top:12px"><summary>자세히</summary><p class="muted" style="margin-top:6px">변경 전: ' + escape(before) + '</p>' +
-        (scope.retained.length ? '<p class="muted">같은 계좌 입금 기록: ' + scope.retained.map(row => escape(row.agencyId + ' ' + (row.depositId ?? ''))).join(', ') + '</p>' : '') +
-        '<p class="muted">올해 이미 지급된 관련 건 ' + scope.history.filter(row => row.paid).length + '건은 되돌리지 않고 지난 지급 점검에서 다뤄요.</p></details>' +
-        (target ? '<div class="rows" style="margin-top:12px"><div class="row"><span class="line">' + (onHold(c.stateFor(target)) ? icon('wait') : icon('ok')) + '진행 중인 거래처 확인은 그대로 이어가요</span>' +
-          '<a href="' + c.link({ view: 'followup', group: target.group.groupId }) + '">보기</a></div><div class="row"><span class="line">' + (resolved ? icon('ok') : icon('wait')) + '임원이 다시 결정해요</span><span class="muted">' +
-          (resolved ? '완료' : '대기') + '</span></div><div class="row"><span class="line">' + (['paymentReady', 'reconciled'].includes(c.stateFor(target)) ? icon('ok') : icon('wait')) + '회계가 다시 확인해요</span>' +
-          '<a href="' + c.link({ view: 'requests', group: target.group.groupId }) + '">요청 보기</a></div></div>' : '') + '</section>';
+      const step = (done, text, link) => '<div class="row"><span class="line">' + (done ? icon('ok') : icon('wait')) + '<span>' + text + '</span></span>' + (link ?? '<span class="muted">' + (done ? '완료' : '대기') + '</span>') + '</div>';
+      return '<section class="card" id="review-' + escape(review.id) + '"><div class="top" style="align-items:center"><h2>' + escape(h.name(review.agency_id)) + ' ' +
+        (review.kind === 'change' ? '정산계좌 변경' : '관련자 묶음 확인') + '</h2>' + pill(statusColor, statusText) + '</div>' +
+        '<div class="kv" style="margin-top:12px">' +
+        (review.kind === 'change' ? '<span>변경</span><span>' + mask(review.details.beforeAccount) + ' → ' + mask(review.details.afterAccount) + '</span>' : '') +
+        '<span>적용 정산월</span><span>' + escape(review.period) + '</span>' +
+        '<span>이번 달</span><span>' + (scope.retained.length ? '묶음 그대로, ' + escape(approver(scope.before[0] ?? {})) : '새 정보로 다시 판단') + '</span>' +
+        '<span>새 정보로 계산하면</span><span>' + escape(describe(scope.after)) + '</span></div>' +
+        (scope.retained.length ? '<p class="muted" style="margin-top:8px">같은 계좌 입금 기록이 있어 이번 달은 묶음을 유지해요. 이미 지급된 관련 건 ' + scope.history.filter(row => row.paid).length + '건은 지난 지급 점검에서 다뤄요.</p>' : '') +
+        (target ? '<div class="hd" style="margin-top:16px"><h2 style="font-size:15px">이어서 할 일</h2></div><div class="rows">' +
+          step(!onHold(c.stateFor(target)), '거래처 확인은 그대로 진행', '<a class="link" href="' + c.link({ view: 'followup', group: target.group.groupId }) + '">거래처 확인</a>') +
+          step(resolved, '영업임원 다시 결정') +
+          step(['paymentReady', 'reconciled'].includes(c.stateFor(target)), '회계 조건 다시 확인', '<a class="link" href="' + c.link({ view: 'requests', group: target.group.groupId }) + '">요청 보기</a>') + '</div>' : '') + '</section>';
     }).join('') : '<section class="card"><p class="empty">다시 판단할 요청이 없어요</p></section>');
 }
 
@@ -620,7 +627,7 @@ export function accountingDetail(c, h) {
   const mismatch = payees.filter(row => row.status === 'mismatch');
   const paidPayees = events.findLast(event => event.action === 'payment')?.metadata?.payees;
   const statusCell = row => row.status === 'mismatch' ? pill('red', '다름') : row.status === 'resolved' ? pill('gray', '등록 계좌로 지급') : icon('ok');
-  const payeeTable = '<div class="hd" style="margin-top:18px"><h2>받는 계좌</h2><span class="r">등록 정산계좌로만 지급</span></div>' +
+  const payeeTable = '<div class="hd"><h2>받는 계좌</h2><span class="r">등록 정산계좌로만 지급</span></div>' +
     table(['거래처', '등록 정산계좌', '거래처 답변', ''], (paidPayees ?? payees).map(row => [escape(h.name(row.agencyId)), mask(row.account),
       row.claimed ? (row.status === 'mismatch' ? '<span style="color:#a12a2a">' + mask(row.claimed) + '</span>' : mask(row.claimed)) : '<span class="muted">답변 없음</span>',
       statusCell(row) + (row.decision?.action === 'payee_change_request' ? '<br><span class="muted">변경 요청 ' + escape(row.decision.on ?? '') + '</span>' : '')])) +
@@ -631,30 +638,38 @@ export function accountingDetail(c, h) {
         '<button name="action" value="payee_resolve">등록 계좌로 지급</button>' +
         (row.decision?.action === 'payee_change_request' ? '' : '<button class="primary" name="action" value="payee_change_request" formnovalidate>변경 요청 보내기</button>') + '</div>') + '</div>').join('') : '');
   const methods = ['원본 우편 수령', '방문 확인', '국세청 사업자 상태 조회', '은행 예금주 조회', '서류 사본 대조'];
-  return '<div><p class="crumb"><a href="' + c.link({ view: 'accounting' }) + '">지급 검토</a> › ' + Number(c.period.slice(5)) + '월</p>' +
-    '<div class="top" style="align-items:flex-end"><h1>' + escape(h.title(entry)) + ' · ' + money(entry.totalKrw) + '</h1>' +
-    (state !== 'paymentPending' ? h.statusPill(entry) : left.length ? pill('amber', '! 조건 ' + (ids.length - left.length) + '/' + ids.length + ' · 지급 보류') : pill('blue', ids.length ? '조건 ' + ids.length + '/' + ids.length + ' · 지급 가능' : '지급 가능')) + '</div></div>' +
-    (ids.length ? '<section class="card"><div class="line" style="justify-content:space-between;flex-wrap:wrap;align-items:baseline"><h2>지급 전 확인할 조건</h2><span class="muted">' +
-      escape(record.role) + '이 ' + time(record.acted_at) + ' 승인하며 붙임</span></div>' +
-      '<div class="bar ok" style="height:6px;margin:12px 0 4px" aria-hidden="true"><i style="width:' + Math.round((ids.length - left.length) / ids.length * 100) + '%;background:#1e8e3e"></i></div><div class="rows">' +
-      ids.map(conditionId => {
-        const done = confirmed.get(conditionId);
-        return '<div class="row" style="flex-direction:column;align-items:stretch"><span class="line">' + (done ? icon('ok') : icon('wait')) + '<span><strong style="font-weight:600">' + escape(conditionCatalog[conditionId] ?? conditionId) +
-          '</strong><br><span class="muted">' + (done ? escape(done.metadata?.evidence?.reference ?? '') + ' · ' + escape(done.reason) + ' · ' + time(done.acted_at) + src('reply', '가상 확인') : '아직 확인 전이에요') + '</span></span></span>' +
-          (!done && c.open && state === 'paymentPending' ? h.post({ view: 'accounting', group: id }, h.revision(entry) + '<input type="hidden" name="condition" value="' + escape(conditionId) + '">' +
-            '<div class="line" style="flex-wrap:wrap;padding-left:30px;margin-top:8px"><select name="evidenceReference" aria-label="확인 방법" style="flex:1 1 170px;width:auto">' +
-            methods.map(method => '<option>' + method + '</option>').join('') + '</select><input name="evidenceFinding" maxlength="1000" required placeholder="확인 결과 · 예: 원본과 사본 일치" aria-label="확인 결과" style="flex:2 1 220px;width:auto">' +
-            '<button class="primary" name="action" value="condition_check">확인함</button></div><div style="padding-left:30px;margin-top:6px">' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div>') : '') + '</div>';
-      }).join('') + '</div></section>' : '') +
-    '<section class="card line" style="justify-content:space-between;flex-wrap:wrap' + (!left.length && !paid ? ';border-color:#c9dcf7' : '') + '"><div><h2>지급 시스템 반영' + src('mock') + '</h2><p class="muted" style="font-size:14px">' +
-    (paid ? escape(events.findLast(event => event.action === 'payment')?.metadata?.evidence?.reference ?? '') + ' · 지급 전에 계좌가 바뀌면 자동으로 보류돼요.'
-      : left.length ? '남은 조건: ' + left.map(conditionId => escape(conditionCatalog[conditionId] ?? conditionId)).join(', ') : mismatch.length ? '받는 계좌를 먼저 정해 주세요.' : '반영하면 지급 목록에 올라가요 (모의 처리).') + '</p></div>' +
-    (canPay ? h.post({ view: 'accounting', group: id }, h.revision(entry) + '<div hidden>' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div>' +
-      '<button class="' + (left.length || mismatch.length ? '' : 'primary') + '" name="action" value="payment"' + (left.length || mismatch.length ? ' disabled' : '') + '>' + (state === 'repayReady' ? '반려분 다시 지급' : '지급 시스템에 반영') + '</button>') : '') + '</section>' +
+  const decidedOn = record.snapshot?.occurredOn ?? '';
+  const statusPill = state !== 'paymentPending' ? h.statusPill(entry) : left.length || mismatch.length ? pill('amber', '지급 보류') : pill('blue', '지급 가능');
+  const conditionRow = conditionId => {
+    const done = confirmed.get(conditionId);
+    const formId = 'check-' + conditionId;
+    const editable = !done && c.open && state === 'paymentPending';
+    return '<div class="row" style="flex-wrap:wrap"><span class="line">' + (done ? icon('ok') : icon('wait')) + '<span>' + escape(conditionCatalog[conditionId] ?? conditionId) +
+      (done ? '<br><span class="muted">' + escape(done.metadata?.evidence?.reference ?? '') + ', ' + escape(done.reason) + '</span>' : '') + '</span></span>' +
+      (done ? '<span class="muted">' + escape(done.metadata?.occurredOn ?? time(done.acted_at)) + '</span>'
+        : editable ? '<button type="button" class="small" data-expand="' + formId + '">확인 입력</button>' : '<span class="muted">확인 전</span>') +
+      (editable ? '<div id="' + formId + '" hidden style="flex-basis:100%;padding:8px 0 0 30px">' + h.post({ view: 'accounting', group: id }, h.revision(entry) +
+        '<input type="hidden" name="condition" value="' + escape(conditionId) + '"><div class="line" style="flex-wrap:wrap"><select name="evidenceReference" aria-label="확인 방법" style="flex:1 1 170px;width:auto">' +
+        methods.map(method => '<option>' + method + '</option>').join('') + '</select><input name="evidenceFinding" maxlength="1000" required placeholder="확인 결과 (예: 원본과 사본 일치)" aria-label="확인 결과" style="flex:2 1 220px;width:auto">' +
+        '<button class="primary" name="action" value="condition_check">확인함</button></div><div style="margin-top:6px">' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div>') + '</div>' : '') + '</div>';
+  };
+  const blocked = left.length || mismatch.length;
+  return '<div><p class="crumb"><a href="' + c.link({ view: 'accounting' }) + '">지급 검토</a> › ' + escape(c.period) + '</p>' +
+    '<div class="top" style="align-items:center"><h1>' + escape(h.title(entry)) + '</h1>' + statusPill + '</div></div>' +
+    '<section class="card"><div class="kv" style="font-size:15px">' + (entry.group.members.length > 1 ? '<span>묶인 거래처</span><span>' + entry.group.members.map(member => escape(h.name(member.agencyId))).join(', ') + '</span>' : '') +
+    '<span>' + Number(c.period.slice(5)) + '월 합계</span><strong style="font-size:22px">' + money(entry.totalKrw) + '</strong>' +
+    '<span>승인</span><span>' + escape(record.role) + (decidedOn ? ' ' + escape(decidedOn) : '') + '</span></div></section>' +
+    (ids.length ? '<section class="card" style="padding-bottom:8px"><div class="hd"><h2>승인 조건</h2><span class="r">' + (ids.length - left.length) + ' / ' + ids.length + ' 확인</span></div>' +
+      '<div class="rows">' + ids.map(conditionRow).join('') + '</div></section>' : '') +
     '<section class="card">' + payeeTable + '</section>' +
+    '<section class="card line" style="justify-content:space-between;flex-wrap:wrap' + (!blocked && !paid ? ';border-color:#c9dcf7' : '') + '"><div><h2>지급 반영</h2><p class="muted" style="font-size:14px;margin-top:2px">' +
+    (paid ? escape(events.findLast(event => event.action === 'payment')?.metadata?.evidence?.reference ?? '') + '. 지급 전에 계좌가 바뀌면 자동으로 보류돼요.'
+      : left.length ? '남은 조건: ' + left.map(conditionId => escape(conditionCatalog[conditionId] ?? conditionId)).join(', ') : mismatch.length ? '받는 계좌를 먼저 정해 주세요.' : '반영하면 지급 목록에 올라가요 (모의).') + '</p></div>' +
+    (canPay ? h.post({ view: 'accounting', group: id }, h.revision(entry) + '<div hidden>' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div>' +
+      '<button class="' + (blocked ? '' : 'primary') + '" name="action" value="payment"' + (blocked ? ' disabled' : '') + '>' + (state === 'repayReady' ? '반려분 다시 지급' : '지급 시스템에 반영') + '</button>') : '') + '</section>' +
     bankSection(c, h, entry, state, events) +
-    (record.snapshot ? '<details class="card tight"><summary>승인 당시 기록 · 합계 ' + money(record.snapshot.totalKrw) + src('calc') + '</summary>' +
-      table(['거래처', '장려금', '자료 위치'], record.snapshot.members.map(row => [escape(h.name(row.agencyId)), money(row.amountKrw), escape(row.source)]), { numeric: [1] }) +
+    (record.snapshot ? '<details class="card tight"><summary>승인 당시 기록</summary>' +
+      table(['거래처', '장려금'], record.snapshot.members.map(row => ['<span title="원본 ' + escape(row.source) + '">' + escape(h.name(row.agencyId)) + '</span>', money(row.amountKrw)]), { numeric: [1] }) +
       '<p class="muted" style="font-size:12px">' + escape(record.role) + ' 승인 시점에 저장한 묶음 구성과 합산액이에요. 나중에 등록 정보가 바뀌어도 이 기록은 그대로예요.</p></details>' : '') +
     history(c, entry);
 }
@@ -666,7 +681,7 @@ function bankSection(c, h, entry, state, events) {
   const repayFor = event => events.filter(row => row.action === 'payment' && Number(row.id) < Number(event.id)).at(-1)?.metadata?.repay;
   const log = results.length ? table(['회신', '거래처별 결과'], results.map(event => [escape(event.metadata?.occurredOn ?? time(event.acted_at)) +
     (repayFor(event) ? '<br><span class="muted">재지급</span>' : ''),
-    Object.entries(event.metadata?.results ?? {}).filter(([agencyId]) => !repayFor(event) || repayFor(event).includes(agencyId)).map(([agencyId, row]) => escape(h.name(agencyId)) + ' ' + (row.result === 'success' ? icon('ok') + ' 지급' : icon('no') + ' 반려 · ' + escape(row.reason) +
+    Object.entries(event.metadata?.results ?? {}).filter(([agencyId]) => !repayFor(event) || repayFor(event).includes(agencyId)).map(([agencyId, row]) => escape(h.name(agencyId)) + ' ' + (row.result === 'success' ? icon('ok') + ' 지급' : icon('no') + ' 반려, ' + escape(row.reason) +
       (row.note ? ' (' + escape(row.note) + ')' : ''))).join('<br>')])) : '';
   const recheck = events.findLast(event => event.action === 'payee_recheck');
   if (state === 'paymentReady' && c.open) {
@@ -677,7 +692,7 @@ function bankSection(c, h, entry, state, events) {
       entry.group.members.map(({ agencyId }) => targets.includes(agencyId)
         ? '<div class="row" style="flex-wrap:wrap"><strong style="flex:0 0 120px;font-weight:600">' + escape(h.name(agencyId)) + '</strong>' +
           '<select name="result_' + escape(agencyId) + '" aria-label="' + escape(h.name(agencyId)) + ' 결과" style="width:auto"><option value="success">지급됨</option><option value="rejected">반려</option></select>' +
-          '<select name="why_' + escape(agencyId) + '" aria-label="반려 사유" style="width:auto"><option value="">반려 사유</option><option value="holder">예금주 불일치</option><option value="closed">계좌 해지·없음</option><option value="other">기타</option></select>' +
+          '<select name="why_' + escape(agencyId) + '" aria-label="반려 사유" style="width:auto"><option value="">반려 사유</option><option value="holder">예금주 불일치</option><option value="closed">계좌 해지 또는 없음</option><option value="other">기타</option></select>' +
           '<input name="note_' + escape(agencyId) + '" maxlength="200" placeholder="메모 (선택)" aria-label="메모" style="flex:1 1 140px;width:auto"></div>'
         : '<input type="hidden" name="result_' + escape(agencyId) + '" value="success">').join('') + '</div>' +
       '<div hidden>' + recordFields(c.period, c.previousMetadata(entry), c.businessDate) + '</div>' +
@@ -727,7 +742,7 @@ export function postAudit(c, h) {
       (selected.conclusion === 'audit_report' ? '<p class="note">다음 승인 때 임원에게 "3개월 사전 확인" 조건이 제안돼요.</p>' : '') +
       (selected.conclusion === 'recovery' ? (selected.recoveryDone ? '<p class="note">' + icon('ok') + ' 영업지원팀 회수 확인: ' + escape(selected.recoveryDone.reason) + '</p>'
         : c.role === '영업지원팀' && c.open ? h.post({ view: 'post-audit', audit: selected.groupId }, '<input type="hidden" name="auditGroup" value="' + escape(selected.groupId) + '">' +
-          '<label class="field" style="margin-top:12px">회수 확인 내용 <textarea name="reason" maxlength="1000" required placeholder="거래처와 확인한 회수 방법·일정"></textarea></label>' +
+          '<label class="field" style="margin-top:12px">회수 확인 내용 <textarea name="reason" maxlength="1000" required placeholder="거래처와 확인한 회수 방법과 일정"></textarea></label>' +
           '<div style="margin-top:10px"><button class="primary" name="action" value="recovery_done">회수 확인 저장</button></div>') : '<p class="note">' + icon('wait') + ' 영업지원팀이 거래처와 회수를 확인하고 있어요.</p>') : '') + '</section>'
       : canDecide ? h.post({ view: 'post-audit', audit: selected.groupId }, '<input type="hidden" name="auditGroup" value="' + escape(selected.groupId) + '">' +
         '<section class="card"><div class="hd"><h2>결론</h2></div><div class="line" style="flex-wrap:wrap;align-items:stretch">' +
@@ -747,26 +762,25 @@ export function dealerHome(c, h) {
   const open = requests.filter(entry => ['waiting', 'received'].includes(c.stateFor(entry)));
   const info = c.currentAgency(c.agency);
   const rebates = c.data.rebates.filter(row => row.agency_id === c.agency).sort((a, b) => b.period_ym.localeCompare(a.period_ym)).slice(0, 4);
-  return '<div><h1>안녕하세요, ' + escape(h.name(c.agency)) + '</h1></div>' +
+  return '<div><h1>' + escape(h.name(c.agency)) + '</h1></div>' +
     open.map(entry => {
       const events = c.eventsFor(entry.group.groupId);
       const asked = requestItems(events, entry.group.groupId).filter(row => row.recipients.includes(c.agency));
       const due = events.findLast(event => ['send', 'resend'].includes(event.action))?.metadata?.dueDate;
       const mine = mergedAnswers(events)[c.agency];
       const resend = events.findLast(event => ['send', 'resend'].includes(event.action))?.action === 'resend';
-      return '<section class="card focus"><div class="top"><div><p class="muted">' + (due ? '답변 기한 ' + escape(due) : '답변 요청') + '</p><h2>' + Number(c.period.slice(5)) + '월 장려금 확인 요청 · 항목 ' + asked.length + '개</h2>' +
-        '<p class="muted" style="margin-top:4px">' + (resend ? '보완이 필요한 항목이 있어요' : mine ? '답변을 보냈어요 · 기한 전까지 고칠 수 있어요' : 'Corevia 영업지원팀 · 지급 전에 확인이 필요합니다') + '</p></div>' +
-        '<a class="btn primary" href="' + c.link({ view: 'agency-replies', group: entry.group.groupId }) + '">' + (mine && !resend ? '답변 고치기' : '답변하기') + '</a></div></section>';
+      return '<section class="card" style="border-color:#c9dcf7"><div class="line" style="justify-content:space-between;flex-wrap:wrap"><span><strong>' + Number(c.period.slice(5)) + '월 장려금 확인 요청</strong>' +
+        '<br><span class="muted">' + (resend ? '보완할 질문 ' + asked.length + '개' : mine ? '답변을 보냈어요. 기한 전까지 고칠 수 있어요' : '답변할 질문 ' + asked.length + '개') + '</span></span>' +
+        '<span class="line" style="gap:12px">' + dday(due, c.businessDate) + '<a class="btn primary" href="' + c.link({ view: 'agency-replies', group: entry.group.groupId }) + '">' + (mine && !resend ? '답변 고치기' : '답변하기') + '</a></span></div></section>';
     }).join('') +
-    '<section class="card"><h2 style="margin-bottom:8px">장려금 내역' + src('raw') + '</h2>' + table(['정산월', '장려금', '상태'], rebates.map(row => {
+    '<section class="card"><div class="hd"><h2>장려금 내역</h2></div>' + table(['정산월', '장려금', '상태'], rebates.map(row => {
       const entry = own.find(candidate => candidate.period === row.period_ym);
       const state = entry && row.period_ym === c.period ? c.stateFor(entry) : null;
-      return [escape(row.period_ym), money(Number(row.rebate_amount_krw)), /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date) ? '지급 ' + escape(row.payment_date.slice(5)) :
-        state === 'reconciled' ? '지급 완료' : ['paymentReady', 'repayReady'].includes(state) ? '지급 예정' : state === 'paymentReturned' ? '지급 반려 · 계좌 확인 중' : ['waiting', 'received', 'draft', 'verified'].includes(state) ? '확인 중' : '검토 중'];
+      return [escape(row.period_ym), money(Number(row.rebate_amount_krw)), /^\d{4}-\d{2}-\d{2}$/.test(row.payment_date) ? '<span class="muted">지급 ' + escape(row.payment_date.slice(5)) + '</span>' :
+        state === 'reconciled' ? '지급 완료' : ['paymentReady', 'repayReady'].includes(state) ? pill('blue', '지급 예정') : state === 'paymentReturned' ? pill('red', '지급 반려') : pill('amber', '확인 중')];
     }), { numeric: [1] }) + '</section>' +
-    '<section class="card"><div class="top"><div><h2>등록 정보</h2><p class="muted" style="margin-top:4px">대표자 ' + escape(info?.representative_name) + ' · ' + escape(info?.address) + ' · 정산계좌 ' + mask(info?.bank_account_no) + '</p></div>' +
-    '<a class="btn" href="' + c.link({ view: 'documents' }) + '">정보 변경 신청</a></div></section>' +
-    '<p class="muted">이 화면에는 우리 거래처 정보만 보여요. 다른 거래처 금액이나 내부 검토 의견은 보이지 않아요.</p>';
+    '<section class="card"><div class="hd"><h2>등록 정보</h2><span class="r"><a class="link" href="' + c.link({ view: 'documents' }) + '">변경 신청</a></span></div>' +
+    '<div class="kv"><span>대표자</span><span>' + escape(info?.representative_name) + '</span><span>주소</span><span>' + escape(info?.address) + '</span><span>정산계좌</span><span>' + mask(info?.bank_account_no) + '</span></div></section>';
 }
 
 export function dealerReply(c, h) {
@@ -784,7 +798,7 @@ export function dealerReply(c, h) {
   const field = row => {
     const base = '<div class="card" style="display:flex;flex-direction:column;gap:10px"><div class="line" style="justify-content:space-between;flex-wrap:wrap"><h2>' + escape(row.label) + '</h2>' +
       (mine?.items[row.id] ? pill('blue', '보냄') : pill('amber', '답변 필요')) + '</div>';
-    const attach = row.attachment ? '<label class="field">' + escape(row.attachment) + ' <span class="muted" style="font-weight:400">파일 이름이나 보관 위치</span><input name="att_' + escape(row.id) + '" value="' + value(row.id, 'attachment') +
+    const attach = row.attachment ? '<label class="field">' + escape(row.attachment) + ' <span class="muted" style="font-weight:400">파일 이름</span><input name="att_' + escape(row.id) + '" value="' + value(row.id, 'attachment') +
       '" maxlength="300" placeholder="예: ' + escape(row.attachment.replace(/\s/g, '')) + '_' + escape(c.agency) + '.pdf"></label>' : '';
     if (row.format === 'account') {
       const saved = mine?.items[row.id]?.account ?? '';
@@ -800,22 +814,21 @@ export function dealerReply(c, h) {
           : '<p class="muted">등록 정산계좌 ' + mask(info?.bank_account_no) + '</p>') +
         '<label class="field">설명 (선택)<textarea name="ans_' + escape(row.id) + '" maxlength="600">' + value(row.id, 'text') + '</textarea></label>' + attach + '</div>';
     }
-    if (row.format === 'yesno') return base + '<div class="seg" role="radiogroup" aria-label="' + escape(row.label) + '">' + ['예', '아니오'].map(option =>
+    if (row.format === 'yesno') return base + '<div class="seg wide-seg" style="max-width:260px" role="radiogroup" aria-label="' + escape(row.label) + '">' + ['예', '아니오'].map(option =>
       '<label><input type="radio" name="yn_' + escape(row.id) + '" value="' + option + '"' + (mine?.items[row.id]?.yesno === option ? ' checked' : '') + '><span>' + option + '</span></label>').join('') +
       '</div><label class="field">설명<textarea name="ans_' + escape(row.id) + '" maxlength="600">' + value(row.id, 'text') + '</textarea></label>' + attach + '</div>';
     return base + '<textarea name="ans_' + escape(row.id) + '" maxlength="600" aria-label="' + escape(row.label) + ' 답변">' + value(row.id, 'text') + '</textarea>' + attach + '</div>';
   };
-  return '<div><p class="crumb"><a href="' + c.link({ view: 'agency-replies', group: '' }) + '">홈</a> › 확인 요청</p><h1>' + Number(c.period.slice(5)) + '월 장려금 확인 요청</h1>' +
-    '<p class="muted" style="margin-top:4px">' + (first ? (first.metadata?.occurredOn ?? time(first.acted_at)) + ' 요청' : '') + (request?.action === 'resend' ? ' · ' + (request.metadata?.occurredOn ?? time(request.acted_at)) + ' 보완 요청' : '') +
-    (request?.metadata?.dueDate ? ' · 기한 ' + escape(request.metadata.dueDate) : '') + '</p></div>' +
-    (request?.action === 'resend' ? '<section class="card tight warn"><strong>보완이 필요한 항목 ' + asked.length + '개</strong><p class="muted" style="margin-top:4px">' +
+  return '<div><p class="crumb"><a href="' + c.link({ view: 'agency-replies', group: '' }) + '">홈</a> › 확인 요청</p>' +
+    '<div class="top" style="align-items:center"><h1>' + Number(c.period.slice(5)) + '월 장려금 확인 요청</h1><span class="muted">' + (request?.metadata?.dueDate ? '기한 ' + escape(request.metadata.dueDate) : '') + '</span></div></div>' +
+    (request?.action === 'resend' ? '<section class="card tight warn"><strong>보완이 필요해요: ' + asked.map(row => escape(row.label)).join(', ') + '</strong><p class="muted" style="margin-top:4px">' +
       escape(request.reason.split('\n').filter(line => !/^D-\d+ · /.test(line) || line.startsWith(c.agency + ' · ')).map(line => line.replace(/^D-\d+ · /, '')).join(' ')) + '</p></section>' : '') +
     (previousItems.length ? '<section class="card tight"><div class="rows">' + previousItems.map(row => '<div class="row"><span class="line">' + icon('ok') + escape(row.label) +
       '</span><span class="muted">확인 완료</span></div>').join('') + '</div></section>' : '') +
     (editable ? h.post({ view: 'agency-replies', group: id }, asked.map(field).join('') + '<div style="display:none">' + recordFields(c.period, null, c.businessDate) + '</div>' +
-      '<div class="line" style="justify-content:space-between;flex-wrap:wrap"><span class="muted">준비된 항목만 먼저 보내도 돼요. 보내면 영업지원팀에 알림이 가고, 기한 전까지 고칠 수 있어요.</span>' +
+      '<div class="line" style="justify-content:space-between;flex-wrap:wrap"><span class="muted">준비된 질문만 먼저 보내도 돼요. 기한 전까지 고칠 수 있어요.</span>' +
       '<button class="primary" name="action" value="reply">' + (mine ? '답변 다시 보내기' : '답변 보내기') + '</button></div>')
-      : '<section class="card"><p class="empty">지금은 답변할 수 없어요 · 영업지원팀이 확인 중이에요</p></section>');
+      : '<section class="card"><p class="empty">영업지원팀이 확인 중이라 지금은 답변할 수 없어요</p></section>');
 }
 
 export function dealerDocs(c, h) {
@@ -823,18 +836,37 @@ export function dealerDocs(c, h) {
   const info = c.currentAgency(c.agency);
   const reviewOf = doc => c.reviews.find(review => review.document_id === doc.id);
   const kinds = { account: '정산계좌', address: '사업장 주소', representative: '대표자' };
-  return '<div><h1>서류</h1><p class="muted" style="font-size:14px;margin-top:4px">확인 요청에서 받은 서류는 요청 화면의 항목에서 바로 적을 수 있어요</p></div>' +
-    '<section class="card"><h2 style="margin-bottom:8px">보낸 서류</h2>' + table(['보낸 날', '내용', '처리 상태'], docs.map(doc => [doc.received_at ? time(doc.received_at) : '—',
-      escape(doc.original.split('\n')[0].slice(0, 40)), reviewOf(doc) || doc.applied ? pill('green', '✓ 반영') : doc.confirmed ? pill('blue', '확인 완료') : pill('amber', '◷ 영업지원팀 확인 중')]), { empty: '보낸 서류가 없어요' }) + '</section>' +
-    (c.open ? h.post({ view: 'documents' }, '<input type="hidden" name="agency" value="' + escape(c.agency) + '"><section class="card" style="display:flex;flex-direction:column;gap:12px"><h2>등록 정보 변경 신청</h2>' +
-      '<p class="muted">영업지원팀 확인 뒤 반영돼요. 진행 중인 장려금 검토에 영향을 줄 수 있어요.</p>' +
-      '<div class="seg" role="radiogroup" aria-label="바꿀 정보">' + Object.entries(kinds).map(([value, label], index) => '<label><input type="radio" name="kind" value="' + value + '"' + (index ? '' : ' checked') + '><span>' + label + '</span></label>').join('') + '</div>' +
-      '<p class="muted">지금 등록: 대표자 ' + escape(info?.representative_name) + ' · ' + escape(info?.address) + ' · 정산계좌 ' + mask(info?.bank_account_no) + '</p>' +
-      '<label class="field">바꿀 내용<input name="newValue" maxlength="200" required placeholder="예: 국민 412-27-556311"></label>' +
+  const docStatus = doc => reviewOf(doc) || doc.applied ? pill('green', '반영') : doc.confirmed ? pill('blue', '확인 완료') : pill('gray', '확인 중');
+  const attached = c.list.flatMap(entry => {
+    const events = c.eventsFor(entry.group.groupId);
+    const mine = mergedAnswers(events)[c.agency];
+    if (!mine) return [];
+    const items = allRequestedItems(events, entry.group.groupId);
+    return Object.entries(mine.items).filter(([, answer]) => answer.attachment).map(([itemId, answer]) =>
+      [answer.attachment, Number(entry.period.slice(5)) + '월 확인 요청: ' + (items.find(row => row.id === itemId)?.label ?? itemId), mine.on ?? '']);
+  });
+  const kind = doc => /변경 신청서 \(([^)]+)\)/.exec(doc.original.split('\n')[0])?.[1];
+  const rows = [
+    ...docs.map(doc => '<div class="lrow"><span class="l"><strong style="font-weight:600">' + escape(kind(doc) ? kind(doc) + ' 변경 신청' : doc.original.split('\n')[0].slice(0, 40)) + '</strong>' +
+      '<small>등록 정보 변경 신청</small></span><span class="r">' + docStatus(doc) + escape(doc.metadata?.occurredOn ?? (doc.received_at ? time(doc.received_at) : '')) + '</span></div>'),
+    ...attached.map(([file, label, on]) => '<div class="lrow"><span class="l"><strong style="font-weight:600">' + escape(file) + '</strong><small>' + escape(label) + '</small></span><span class="r">' + escape(on) + '</span></div>'),
+  ];
+  return '<div><h1>서류</h1></div>' +
+    '<section class="card" style="padding-bottom:6px"><div class="hd"><h2>제출 내역</h2></div>' + (rows.length ? rows.join('') : '<p class="empty">보낸 서류가 없어요</p>') + '</section>' +
+    (c.open ? h.post({ view: 'documents' }, '<input type="hidden" name="agency" value="' + escape(c.agency) + '"><section class="card" style="display:flex;flex-direction:column;gap:12px">' +
+      '<div class="hd" style="margin:0"><h2>등록 정보 변경 신청</h2></div>' +
+      '<div class="seg wide-seg" role="radiogroup" aria-label="바꿀 정보" style="max-width:460px">' + Object.entries(kinds).map(([value, label], index) =>
+        '<label><input type="radio" name="kind" value="' + value + '"' + (index ? '' : ' checked') + ' data-kind><span>' + label + '</span></label>').join('') + '</div>' +
+      '<div data-when-kind="account" style="display:grid;grid-template-columns:minmax(140px,180px) 1fr 1fr;gap:10px">' +
+        '<label class="field">은행<select name="bank_new"><option value="">선택</option>' + banks.map(bank => '<option>' + bank + '</option>').join('') + '</select></label>' +
+        '<label class="field">계좌번호<input name="acc_new" inputmode="numeric" pattern="[0-9-]{10,20}" maxlength="20" placeholder="숫자와 하이픈만"></label>' +
+        '<label class="field">예금주<input name="holder_new" maxlength="60"></label></div>' +
+      '<label class="field" data-when-kind="other" hidden>바꿀 내용<input name="newValue" maxlength="200"></label>' +
+      '<p class="muted">지금 등록: 정산계좌 ' + mask(info?.bank_account_no) + ', 대표자 ' + escape(info?.representative_name) + ', 주소 ' + escape(info?.address) + '</p>' +
       '<label class="field">변경 사유<input name="why" maxlength="300" required placeholder="예: 장려금 계좌를 거래처별로 분리"></label>' +
-      '<label class="field">첨부한 서류 <span class="muted" style="font-weight:400">파일 이름이나 보관 위치 · 대표자 서명 필요</span><input name="attachment" maxlength="200" placeholder="예: 계좌변경신청서.pdf"></label>' +
-      '<details><summary>또는 서류 내용을 그대로 붙여넣기</summary><textarea name="text" maxlength="6000" style="margin-top:8px"></textarea></details>' +
-      '<div style="display:none">' + recordFields(c.period, null, c.businessDate) + '</div><div><button class="primary" name="action" value="document_add">변경 신청</button></div></section>') : '');
+      '<label class="field">첨부한 서류 <span class="muted" style="font-weight:400">파일 이름, 대표자 서명이나 직인 필요</span><input name="attachment" maxlength="200" placeholder="예: 계좌변경신청서.pdf"></label>' +
+      '<div style="display:none">' + recordFields(c.period, null, c.businessDate) + '</div>' +
+      '<div class="line" style="justify-content:space-between;flex-wrap:wrap"><span class="muted">영업지원팀 확인 뒤 반영돼요. 진행 중인 장려금 검토에 영향을 줄 수 있어요.</span><button class="primary" name="action" value="document_add">변경 신청</button></div></section>') : '');
 }
 
 /* ---------- 관리자 ---------- */
@@ -848,14 +880,14 @@ export function aiError(message = '') {
 }
 
 export function aiLog(c, h) {
-  const purposes = { items: '확인 항목 제안', reply_check: '답변 판정', extract: '서류 읽기', conditions: '승인 조건 제안', draft: '요청서 초안' };
+  const purposes = { items: '확인 항목 제안', reply_check: '답변 판정', extract: '서류 읽기', conditions: '승인 조건 제안', review_summary: '임원 검토 요약', anomaly_note: '확인 권장 설명', draft: '요청서 초안' };
   const legacy = { summary: '근거 요약 (이전 기능)' };
   const filter = Object.hasOwn(purposes, c.query.get('kind')) ? c.query.get('kind') : '';
   const calls = c.calls.filter(call => !filter || call.kind === filter).slice().reverse();
   const outcome = call => {
     if (call.archived_at) return ['wait', '초기화 전 기록'];
     if (!call.finished_at) return ['wait', '결정 전'];
-    if (!call.result) return ['no', '실패 · 사람이 직접'];
+    if (!call.result) return ['no', '실패, 사람이 직접'];
     const events = c.events.filter(event => event.group_id === call.group_id);
     if (call.kind === 'items') {
       const sent = events.find(event => event.action === 'send' && event.metadata?.ai?.callId === String(call.id));
@@ -878,6 +910,7 @@ export function aiLog(c, h) {
       const changed = Object.keys(extractFields).filter(key => doc.confirmed[key]?.decision === 'edit').length;
       return changed ? ['warn', changed + '개 값 고침'] : ['ok', '수락'];
     }
+    if (['review_summary', 'anomaly_note'].includes(call.kind)) return ['ok', '참고 표시'];
     return ['wait', '이전 기능 기록'];
   };
   const summary = call => {
@@ -886,22 +919,27 @@ export function aiLog(c, h) {
     if (call.kind === 'items') return r.items.map(row => escape(c.catalogLabel(row.id))).join(', ') + (r.newItem ? ', 새 항목 "' + escape(r.newItem) + '"' : '');
     if (call.kind === 'reply_check') return ['met', 'partial', 'missing'].map(verdict => verdictLabels[verdict] + ' ' + r.items.filter(row => row.verdict === verdict).length).join(', ');
     if (call.kind === 'conditions') return r.conditions.map(id => escape(conditionCatalog[id] ?? id)).join(', ');
+    if (r.points) return r.points.map(point => escape(point.text)).join('<br>');
     if (call.kind === 'extract') return Object.entries(extractFields).map(([key, label]) => r[key]?.candidates?.[0] ? label + ' ' + escape(key === 'bank_account_no' ? '••' + r[key].candidates[0].value.slice(-4) : r[key].candidates[0].value) : null).filter(Boolean).join(', ');
     return '완료';
   };
-  const counts = calls.filter(call => purposes[call.kind]).reduce((acc, call) => { const [tone] = outcome(call); acc[tone] = (acc[tone] ?? 0) + 1; return acc; }, {});
-  return '<div><h1>AI 사용 기록</h1><p class="muted" style="font-size:14px;margin-top:4px">AI 결과와 사람 결정이 다른 건을 먼저 확인하세요</p></div>' +
-    '<div class="stats"><div class="stat"><span>호출</span><strong>' + calls.length + '</strong></div><div class="stat"><span>사람이 따름</span><strong>' + (counts.ok ?? 0) + '</strong></div>' +
-    '<div class="stat"><span>사람이 바꿈</span><strong>' + (counts.warn ?? 0) + '</strong></div><div class="stat"><span>실패</span><strong>' + (counts.no ?? 0) + '</strong></div></div>' +
-    '<div class="tabs"><a class="btn tab" href="' + c.link({ view: 'ai-log', kind: '' }) + '"' + (filter ? '' : ' aria-current="page"') + '>전체</a>' +
-    Object.entries(purposes).map(([key, label]) => '<a class="btn tab" href="' + c.link({ view: 'ai-log', kind: key }) + '"' + (filter === key ? ' aria-current="page"' : '') + '>' + label + '</a>').join('') + '</div>' +
-    '<section class="card">' + table(['시각', '용도', '대상', 'AI 결과', '사람 결정'], calls.map(call => {
-      const [tone, text] = outcome(call);
-      const target = call.group_id ? escape(h.name(call.group_id)) : '서류 ' + escape(call.document_id);
-      return [time(call.created_at) + '<br><span class="muted">' + escape(call.period) + '</span>', escape(purposes[call.kind] ?? legacy[call.kind] ?? call.kind), target,
-        summary(call) + (call.raw?.attempts ? '<br><span class="muted">자동 재시도 1회</span>' : '') + '<details><summary>보낸 내용과 응답 원문</summary><pre class="doc" style="font-size:12px">' + escape(JSON.stringify({ request: call.request, response: call.raw }, null, 2)).slice(0, 6000) + '</pre></details>',
-        '<span class="line">' + icon(tone) + escape(text) + '</span>'];
-    }), { empty: 'AI 호출 기록이 없어요' }) + '<p class="muted" style="margin-top:8px">AI 결과는 코드가 허용 목록과 원문 인용으로 다시 검사한 뒤에만 화면에 써요.</p></section>';
+  const tab = ['changed', 'failed'].includes(c.query.get('tab')) ? c.query.get('tab') : 'all';
+  const tones = { all: () => true, changed: call => outcome(call)[0] === 'warn', failed: call => outcome(call)[0] === 'no' };
+  const shown = calls.filter(tones[tab]);
+  const toneOf = { ok: ['green', ''], warn: ['amber', ''], no: ['red', ''], wait: ['gray', ''] };
+  const row = call => {
+    const [tone, text] = outcome(call);
+    const target = call.group_id ? h.name(call.group_id) : call.kind === 'anomaly_note' ? Number(call.period.slice(5)) + '월 팀 승인' : call.document_id ? '서류 ' + call.document_id : '서류 (초기화 전)';
+    return '<div class="lrow" style="flex-wrap:wrap"><span class="l"><strong style="font-weight:600">' + escape(purposes[call.kind] ?? legacy[call.kind] ?? call.kind) + '</strong><small>' + escape(target) + '</small></span>' +
+      '<span class="r">' + pill(toneOf[tone][0], text) + '<span>' + escape(call.period) + '</span><span>' + time(call.created_at) + '</span><a class="link" href="#call-' + call.id + '" data-expand="call-' + call.id + '">펼치기</a></span>' +
+      '<div id="call-' + call.id + '" hidden style="flex-basis:100%;padding-top:8px;font-size:14px"><p>' + summary(call) + (call.raw?.attempts ? ' <span class="muted">(자동 재시도 1회)</span>' : '') + '</p>' +
+      '<details style="margin-top:6px"><summary>보낸 내용과 응답 원문</summary><pre class="doc" style="font-size:12px">' + escape(JSON.stringify({ request: call.request, raw: call.raw }, null, 2)) + '</pre></details></div></div>';
+  };
+  return '<div class="top" style="align-items:center"><h1>AI 사용 기록</h1><span class="muted">전체 기간</span></div>' +
+    '<div class="tabs">' + [['all', '전체'], ['changed', '사람이 바꿈'], ['failed', '실패']].map(([key, label]) => '<a class="btn tab" href="' + c.link({ view: 'ai-log', tab: key }) + '"' +
+      (key === tab ? ' aria-current="page"' : '') + '>' + label + ' ' + calls.filter(tones[key]).length + '</a>').join('') + '</div>' +
+    '<section class="card" style="padding-top:6px;padding-bottom:6px">' + (shown.length ? shown.map(row).join('') : '<p class="empty">AI 호출 기록이 없어요</p>') + '</section>' +
+    '<p class="muted">AI 결과는 코드가 허용 목록, 원문 인용, 계산된 사실과 다시 맞춰 본 뒤에만 화면에 써요. 보낸 내용의 계좌번호는 가려서 보여요.</p>';
 }
 
 export function catalogAdmin(c, h) {
@@ -911,29 +949,38 @@ export function catalogAdmin(c, h) {
   const toggle = (id, status) => h.post({ view: 'catalog' }, '<input type="hidden" name="id" value="' + escape(id) + '"><input type="hidden" name="status" value="' +
     (status === 'active' ? 'disabled' : 'active') + '"><button class="small" name="action" value="catalog_status">' +
     (status === 'active' ? '사용 중지' : status === 'proposed' ? '승인' : '다시 사용') + '</button>');
-  const statusPill = status => status === 'active' ? pill('green', '사용') : status === 'proposed' ? pill('blue', 'AI 제안 · 검토 대기') : pill('gray', '중지');
+  const statusPill = status => status === 'active' ? pill('green', '사용') : status === 'proposed' ? pill('amber', 'AI 제안 검토') : pill('gray', '중지');
+  const tab = ['conditions', 'disputes', 'reset'].includes(c.query.get('tab')) ? c.query.get('tab') : 'items';
   const disputes = [...new Set(c.allEvents.filter(event => event.action === 'dispute').map(event => event.group_id + '|' + event.period))].map(key => {
     const [groupId, period] = key.split('|');
     const trail = c.allEvents.filter(event => event.group_id === groupId && event.period === period && ['dispute', 'dispute_close'].includes(event.action));
     return { groupId, period, last: trail.at(-1), opened: trail.findLast(event => event.action === 'dispute') };
   });
   const kinds = { not_same: '같은 사람이 아님', changed: '정보가 이미 바뀜', other: '기타' };
-  return '<div><h1>항목·조건 목록</h1><p class="muted" style="font-size:14px;margin-top:4px">AI는 이 목록에서 먼저 고르고, 맞는 게 없으면 새 항목을 제안해요. 확정은 사람이 해요.</p></div>' +
-    '<section class="card"><h2 style="margin-bottom:8px">확인 항목</h2>' + table(['항목', '답변 형식', '필수 첨부', '보낸 횟수', '상태', ''], items.map(([id, row]) => [
-      escape(row.label), escape(formatHints[row.format] ?? '글로 답변'), escape(row.attachment || '—'), String(usage(id)), statusPill(row.status), toggle(id, row.status)])) +
-    h.post({ view: 'catalog' }, '<input type="hidden" name="kind" value="item"><div class="line" style="flex-wrap:wrap;margin-top:12px"><input name="label" maxlength="60" required placeholder="새 항목 이름" aria-label="새 항목 이름" style="flex:2 1 200px;width:auto">' +
-      '<select name="format" aria-label="답변 형식" style="flex:1 1 120px;width:auto"><option value="text">글로 답변</option><option value="account">계좌·예금주</option><option value="yesno">예/아니오</option></select>' +
-      '<input name="attachment" maxlength="40" placeholder="필수 첨부 (선택)" aria-label="필수 첨부" style="flex:1 1 140px;width:auto"><button name="action" value="catalog_add">항목 추가</button></div>') + '</section>' +
-    '<section class="card"><h2 style="margin-bottom:8px">승인 조건</h2>' + table(['조건', '상태', ''], conditions.map(([id, row]) => [escape(row.label), statusPill(row.status), toggle(id, row.status)])) +
-    '<p class="muted" style="margin-top:6px">조건은 묶음 근거에 맞는 것만 임원에게 보여요. 고친 내용은 다음 요청부터 적용되고, 이미 보낸 요청은 바뀌지 않아요.</p></section>' +
-    '<section class="card" id="disputes"><h2 style="margin-bottom:8px">묶음 이의 제기</h2>' + (disputes.length ? disputes.map(row => '<div class="row" style="flex-wrap:wrap;align-items:flex-start"><div style="flex:1 1 280px"><strong>' +
-      escape(h.name(row.groupId)) + ' 묶음 · ' + escape(row.period) + '</strong><br><span class="muted">' + escape(kinds[row.opened.metadata?.kind] ?? '') + ' · ' + escape(row.opened.reason) + ' · ' + time(row.opened.acted_at) + '</span>' +
-      (row.last.action === 'dispute_close' ? '<br><span class="muted">처리: ' + (row.last.metadata?.result === 'fixed' ? '받아들임' : '묶음 유지') + ' · ' + escape(row.last.reason) + '</span>' : '') + '</div>' +
-      (row.last.action === 'dispute' ? '<form method="post" action="/?' + escape(new URLSearchParams({ period: row.period, view: 'catalog' }).toString()) + '" class="line" style="flex-wrap:wrap;flex:1 1 320px"><input type="hidden" name="disputeGroup" value="' + escape(row.groupId) + '">' +
-        '<select name="result" aria-label="처리 결과" style="width:auto"><option value="kept">묶음 유지</option><option value="fixed">받아들임 · 원본 수정 요청</option></select><input name="reason" maxlength="1000" required placeholder="검토 내용" aria-label="검토 내용" style="flex:1 1 160px;width:auto">' +
-        '<button class="small" name="action" value="dispute_close">처리</button></form>' : pill('gray', '처리 완료')) + '</div>').join('')
-      : '<p class="empty">이의 제기가 없어요</p>') + '<p class="muted" style="margin-top:6px">묶음 판정 규칙(대표자·주소·계좌 중 2개 일치)은 원본 자료로 계산해요. 받아들여도 원본은 바꾸지 않고, 원본 수정 요청으로 남겨요.</p></section>' +
-    '<section class="card" id="reset"><h2>시연 초기화</h2><p class="muted" style="margin-top:4px">이 정산월(' + escape(c.period) + ')의 앱 기록(결정·요청·답변·서류·AI 기록)을 모두 지워요. 원본 CSV와 항목 목록은 그대로예요. 되돌릴 수 없어요.</p>' +
-    (c.open ? h.post({ view: 'catalog' }, '<div class="line" style="flex-wrap:wrap;margin-top:10px"><input name="confirm" required pattern="' + escape(c.period) + ' 초기화" placeholder="' + escape(c.period) + ' 초기화 라고 입력" aria-label="확인 문구" style="flex:1 1 220px;width:auto">' +
-      '<button class="danger" name="action" value="reset">초기화</button></div>') : '<p class="muted">지급이 끝난 달은 초기화할 기록이 없어요.</p>') + '</section>';
+  const lineRow = (label, sub, right) => '<div class="lrow"><span class="l"><strong style="font-weight:600">' + label + '</strong>' + (sub ? '<small>' + sub + '</small>' : '') + '</span><span class="r">' + right + '</span></div>';
+  const openDisputes = disputes.filter(row => row.last.action === 'dispute').length;
+  const tabs = [['items', '확인 항목', items.length], ['conditions', '승인 조건', conditions.length], ['disputes', '묶음 이의 제기', openDisputes], ['reset', '시연 초기화', null]];
+  const body = {
+    items: () => '<section class="card" style="padding-top:6px">' + items.map(([id, row]) => lineRow(escape(row.label),
+        escape(formatHints[row.format] ?? '글로 답변') + (row.attachment ? ', ' + escape(row.attachment) + ' 첨부' : '') + ', 보낸 횟수 ' + usage(id), statusPill(row.status) + toggle(id, row.status))).join('') +
+      h.post({ view: 'catalog' }, '<input type="hidden" name="kind" value="item"><div class="line" style="flex-wrap:wrap;margin-top:12px"><input name="label" maxlength="60" required placeholder="새 항목 이름" aria-label="새 항목 이름" style="flex:2 1 200px;width:auto">' +
+        '<select name="format" aria-label="답변 형식" style="flex:1 1 120px;width:auto"><option value="text">글로 답변</option><option value="account">은행, 계좌번호, 예금주</option><option value="yesno">예/아니오</option></select>' +
+        '<input name="attachment" maxlength="40" placeholder="필수 첨부 (선택)" aria-label="필수 첨부" style="flex:1 1 140px;width:auto"><button name="action" value="catalog_add">항목 추가</button></div>') + '</section>' +
+      '<p class="muted">AI는 이 목록에서 먼저 고르고, 없으면 새 항목을 제안해요. 확정은 담당자가 해요. 고친 내용은 다음 요청부터 적용돼요.</p>',
+    conditions: () => '<section class="card" style="padding-top:6px">' + conditions.map(([id, row]) => lineRow(escape(row.label), '', statusPill(row.status) + toggle(id, row.status))).join('') + '</section>' +
+      '<p class="muted">조건은 묶음 근거에 맞는 것만 임원에게 보여요.</p>',
+    disputes: () => '<section class="card" id="disputes" style="padding-top:6px">' + (disputes.length ? disputes.map(row => '<div class="lrow" style="flex-wrap:wrap;align-items:flex-start"><span class="l"><strong style="font-weight:600">' +
+      escape(h.name(row.groupId)) + ' 묶음</strong><small>' + escape(row.period) + ', ' + escape(kinds[row.opened.metadata?.kind] ?? '') + ', ' + escape(row.opened.reason) + '</small>' +
+      (row.last.action === 'dispute_close' ? '<small>처리: ' + (row.last.metadata?.result === 'fixed' ? '받아들임' : '묶음 유지') + ', ' + escape(row.last.reason) + '</small>' : '') + '</span>' +
+      (row.last.action === 'dispute' ? '<form method="post" action="/?' + escape(new URLSearchParams({ period: row.period, view: 'catalog', tab: 'disputes' }).toString()) + '" class="line" style="flex-wrap:wrap;flex:1 1 320px"><input type="hidden" name="disputeGroup" value="' + escape(row.groupId) + '">' +
+        '<select name="result" aria-label="처리 결과" style="width:auto"><option value="kept">묶음 유지</option><option value="fixed">받아들임, 원본 수정 요청</option></select><input name="reason" maxlength="1000" required placeholder="검토 의견" aria-label="검토 의견" style="flex:1 1 160px;width:auto">' +
+        '<button class="small" name="action" value="dispute_close">처리</button></form>' : '<span class="r">' + pill('gray', '처리 완료') + '</span>') + '</div>').join('')
+      : '<p class="empty">이의 제기가 없어요</p>') + '</section><p class="muted">묶음 판정 규칙(대표자, 주소, 계좌 중 2개 일치)은 원본 자료로 계산해요. 받아들여도 원본은 바꾸지 않아요.</p>',
+    reset: () => '<section class="card" id="reset"><div class="hd"><h2>시연 초기화</h2><span class="r">' + escape(c.period) + '</span></div><p class="muted">이 정산월의 결정, 요청, 답변, 서류를 지워요. 원본 CSV, 항목 목록, AI 사용 기록은 그대로 남아요.</p>' +
+      (c.open ? h.post({ view: 'catalog', tab: 'reset' }, '<div class="line" style="flex-wrap:wrap;margin-top:10px"><input name="confirm" required pattern="' + escape(c.period) + ' 초기화" placeholder="' + escape(c.period) + ' 초기화 라고 입력" aria-label="확인 문구" style="flex:1 1 220px;width:auto">' +
+        '<button class="danger" name="action" value="reset">초기화</button></div>') : '<p class="muted">지급이 끝난 달은 초기화할 기록이 없어요.</p>') + '</section>',
+  };
+  return '<div><h1>확인 항목 목록</h1></div>' +
+    '<div class="tabs">' + tabs.map(([key, label, count]) => '<a class="btn tab" href="' + c.link({ view: 'catalog', tab: key }) + '"' + (key === tab ? ' aria-current="page"' : '') + '>' + label + (count === null ? '' : ' ' + count) + '</a>').join('') + '</div>' +
+    body[tab]();
 }

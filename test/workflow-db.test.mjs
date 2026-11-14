@@ -94,7 +94,7 @@ test('isolated PostgreSQL: normal, rejection, change during clarification and ch
     const resend = (await pool.query("SELECT metadata FROM w07_event WHERE action='resend' ORDER BY id DESC LIMIT 1")).rows[0].metadata;
     assert.deepEqual(resend.items.find(row => row.id === 'payee').recipients, ['D-024', 'D-037']);
     assert.deepEqual(resend.items.find(row => row.id === 'sharedAccount').recipients, ['D-024', 'D-037']);
-    assert.match(await visit(3, null, {}, [200], 'D-024'), /보완이 필요한 항목/);
+    assert.match(await visit(3, null, {}, [200], 'D-024'), /보완이 필요해요: /);
     await answer('D-024', { acc_payee: '하나 233-91-004417', holder_payee: '성일상사24', att_payee: '통장사본.pdf', yn_sameRep: '예', ans_sameRep: '동일', att_sameRep: '등록증.pdf' });
     await answer('D-037', { ans_sharedAccount: '공동 정산용', acc_payee: '국민 412-27-556310', holder_payee: '대륙상사37', att_payee: '통장사본.pdf',
       yn_sameRep: '예', ans_sameRep: '동일', att_sameRep: '등록증 사본' });

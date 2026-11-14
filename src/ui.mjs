@@ -11,7 +11,12 @@ export const time = value => new Intl.DateTimeFormat('ko-KR', {
 export const day = value => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric' })
   .format(new Date(value));
 export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
-export const mask = account => '•••• ' + escape(String(account ?? '').slice(-4));
+// 계좌는 은행 이름과 끝 4자리만 보여준다 (예: 국민 •••• 6310)
+export const mask = account => {
+  const text = String(account ?? '').trim();
+  const bank = /^([가-힣A-Za-z]+)\s/.exec(text)?.[1];
+  return (bank ? escape(bank) + ' ' : '') + '•••• ' + escape(text.slice(-4));
+};
 
 export const styles = `
 *{box-sizing:border-box}
@@ -134,10 +139,10 @@ export const icon = kind => ({
 })[kind];
 
 const sourceTitles = { raw: '제공된 원본 자료의 값', calc: '원본으로 시스템이 계산한 값', reply: '시연용으로 입력한 거래처 회신(실제 회신 아님)',
-  mock: '실제 시스템 대신 흉내 낸 처리', ai: 'AI가 낸 후보 · 사람이 확정', est: '원본만으로는 확정할 수 없는 추정' };
+  mock: '실제 시스템 대신 흉내 낸 처리', ai: 'AI가 낸 후보, 사람이 확정', est: '원본만으로는 확정할 수 없는 추정' };
 const sourceNames = { raw: '원본', calc: '계산', reply: '가상 회신', mock: '모의', ai: 'AI 제안', est: '추정' };
 export const src = (kind, label) => '<span class="src src-' + kind + '" title="' + sourceTitles[kind] + '">' + (label ?? sourceNames[kind]) + '</span>';
-export const legend = () => '<p class="legend">표시: ' + ['raw', 'calc', 'reply', 'mock', 'ai', 'est'].map(kind => src(kind) + ' ' + sourceTitles[kind].split(' · ')[0]).join(' · ') + '</p>';
+export const legend = () => '<p class="legend">표시: ' + ['raw', 'calc', 'reply', 'mock', 'ai', 'est'].map(kind => src(kind) + ' ' + sourceTitles[kind].split(', ')[0]).join(', ') + '</p>';
 
 export const pill = (tone, text) => '<span class="pill s-' + tone + '">' + text + '</span>';
 
@@ -164,13 +169,13 @@ export function table(headers, rows, { empty = '아직 없어요', numeric = [] 
 export const BASE_DATE = '2026-07-01';
 export function recordFields(period, previous, businessDate = BASE_DATE) {
   const inherited = previous?.effectivePeriod === period ? previous : null;
-  return '<details class="record"><summary>기록 정보 · 업무일 ' + escape(businessDate) + ' · ' +
+  return '<details class="record"><summary>업무일 ' + escape(businessDate) + ', ' +
     escape(sourceLabels[inherited?.source ?? 'manual']) + '</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:8px">' +
     '<label class="field">업무 발생일 <input type="date" name="occurredOn" value="' + escape(businessDate) + '" required></label>' +
     '<label class="field">자료 구분 <select name="source">' + Object.entries(sourceLabels).map(([value, label]) =>
       '<option value="' + value + '"' + (value === (inherited?.source ?? 'manual') ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label>' +
     '<input type="hidden" name="sameEffectiveDate" value="yes"><input type="hidden" name="effectivePeriod" value="' + escape(period) + '">' +
-    '</div><p class="muted" style="margin-top:6px">가상 업무일 기준(기준일 2026-07-01, 이후 기록의 마지막 업무일을 이어받음) · 적용일은 업무 발생일과 같고 정산월 ' + escape(period) + '에 바로 반영돼요. 실제 입력 시각은 기록 시각으로 따로 남아요.</p></details>';
+    '</div><p class="muted" style="margin-top:6px">가상 업무일 기준(기준일 2026-07-01, 이후 기록의 마지막 업무일을 이어받음). 적용일은 업무 발생일과 같고 정산월 ' + escape(period) + '에 바로 반영돼요. 실제 입력 시각은 기록 시각으로 따로 남아요.</p></details>';
 }
 
 export function bell(items) {
@@ -191,7 +196,7 @@ export function shell({ title, subtitle, nav, content, role, period, periods, pe
     '<div class="side-foot">' + (periods && periods.length > 1 && role !== '대리점' ? '<form method="get" class="line" style="gap:6px"><input type="hidden" name="view" value="' + escape(periodLink) + '">' +
       '<select name="period" aria-label="정산월" style="padding:6px 8px">' + periods.map(value => '<option' + (value === period ? ' selected' : '') + '>' + value + '</option>').join('') +
       '</select><button class="small">보기</button></form>' : '') +
-    '<span>' + escape(role) + ' · <a href="' + escape(roleLink) + '">역할 바꾸기</a></span></div></nav>' +
+    '<span>' + escape(role) + ' <a href="' + escape(roleLink) + '" style="margin-left:6px">역할 바꾸기</a></span></div></nav>' +
     '<main class="page"><div class="wrap' + (wide ? ' wide' : '') + '">' +
     (notifications ? '<div style="display:flex;justify-content:flex-end;margin-bottom:-8px;position:relative">' + bell(notifications) + '</div>' : '') +
     content + (role === '대리점' ? '' : '<details style="margin-top:8px"><summary>표시 읽는 법</summary>' + legend() + '</details>') + '</div></main></div>' + clientScript + script + '</body></html>';
@@ -224,6 +229,8 @@ document.addEventListener('submit',async event=>{
   finally{button.disabled=false;}
 });
 document.addEventListener('click',event=>{const link=event.target.closest('[data-expand]');if(!link)return;const box=document.getElementById(link.dataset.expand);if(!box)return;event.preventDefault();if(box.tagName==='DETAILS')box.open=!box.open;else box.hidden=!box.hidden;box.scrollIntoView({block:'nearest',behavior:'smooth'});});
+const kindSwitch=()=>{const picked=document.querySelector('input[data-kind]:checked');if(!picked)return;for(const box of document.querySelectorAll('[data-when-kind]')){const show=(box.dataset.whenKind==='account')===(picked.value==='account');box.hidden=!show;for(const input of box.querySelectorAll('input,select'))input.required=show&&input.name!=='holder_new';}};
+document.addEventListener('change',event=>{if(event.target.matches('input[data-kind]'))kindSwitch();});kindSwitch();
 document.addEventListener('input',event=>{if(event.target.name)event.target.dataset.touched='1';});
 document.addEventListener('change',event=>{if(event.target.name)event.target.dataset.touched='1';});
 const bulk=form=>{if(!form)return;const boxes=[...form.querySelectorAll('input[name=request]:checked')];const count=form.querySelector('[data-count]');const sum=form.querySelector('[data-sum]');if(count)count.textContent=boxes.length+'건 선택';if(sum)sum.textContent=new Intl.NumberFormat('ko-KR').format(boxes.reduce((a,b)=>a+Number(b.dataset.amount||0),0))+'원';};

@@ -117,7 +117,7 @@ test('dealer sees only own items and the narrowed request after a resend', async
     acted_at: new Date('2026-07-04'), metadata: { ...metadata, dueDate: '2026-07-08', items: [{ ...items[1], recipients: ['D-024'] }, { ...items[0], recipients: ['D-037'] }] } };
   const events = [sent, reply(2, 'D-024', { sharedAccount: { text: '잘못 입금' } }), resend];
   const dealer = await render({ url: '/?view=agency-replies&period=2026-06&group=D-011', role: 3, dealer: 'D-024', rows: [rejected], events });
-  assert.match(dealer.html, /보완이 필요한 항목 1개/);
+  assert.match(dealer.html, /보완이 필요해요: 장려금 받을 계좌와 예금주/);
   assert.match(dealer.html, /name="acc_payee"/);
   assert.doesNotMatch(dealer.html, /name="ans_sharedAccount"/);
   assert.doesNotMatch(dealer.html, /D-037 ·|대륙상사37|공동 입금계좌 경위와 실제/);
@@ -132,7 +132,7 @@ test('accounting must confirm every approval condition before payment', async ()
   const conditional = { ...decision, conditions: ['payeeProof'] };
   const url = '/?view=accounting&period=2026-06&group=D-011';
   const { html } = await render({ url, role: 2, rows: [conditional] });
-  assert.match(html, /조건 0\/1 · 지급 보류/);
+  assert.match(html, /0 \/ 1 확인/);
   assert.match(html, /value="condition_check"/);
   assert.match(html, /name="action" value="payment" disabled/);
   const blocked = await render({ url, role: 2, rows: [conditional],
@@ -145,10 +145,10 @@ test('accounting must confirm every approval condition before payment', async ()
     { id: 3, group_id: 'D-011', role: '회계', action: 'condition_check', reason: '명의 확인', acted_at: new Date('2026-07-05'),
       metadata: { condition: 'payeeProof', evidence: { reference: '은행 예금주 조회', finding: '명의 확인' } } },
   ] });
-  assert.match(confirmed.html, /조건 1\/1 · 지급 가능/);
+  assert.match(confirmed.html, /1 \/ 1 확인/);
   assert.match(confirmed.html, /class="primary" name="action" value="payment">/);
-  assert.match(confirmed.html, /src-mock[^>]*>모의</);
-  assert.match(confirmed.html, /가상 확인/);
+  assert.match(confirmed.html, /\(모의\)/);
+  assert.match(confirmed.html, /은행 예금주 조회, 명의 확인/);
 });
 
 test('payment goes only to registered settlement accounts; a different answered account blocks it', async () => {
@@ -160,7 +160,7 @@ test('payment goes only to registered settlement accounts; a different answered 
   assert.match(html, /value="payee_resolve"/);
   assert.match(html, /value="payee_change_request"/);
   assert.match(html, /name="action" value="payment" disabled/);
-  assert.match(html, /승인 당시 기록 · 합계 3,888,097원/);
+  assert.match(html, /승인 당시 기록/);
   const blocked = await render({ url, role: 2, rows: [decision], events,
     body: new URLSearchParams({ action: 'payment', revision: '2', ...metadata, sameEffectiveDate: 'yes' }).toString() });
   assert.equal(blocked.status, 422);
@@ -198,7 +198,7 @@ test('history is newest first and records stay collapsed with defaults', async (
   const { html } = await render({ url: '/?view=followup&period=2026-06&group=D-011', role: 0, rows: [rejected], events });
   const history = html.slice(html.indexOf('id="history"'));
   assert.ok(history.indexOf('거래처 답변') < history.indexOf('거래처 확인 요청'));
-  assert.match(html, /<details class="record"><summary>기록 정보/);
+  assert.match(html, /<details class="record"><summary>업무일 /);
   assert.match(html, /name="occurredOn" value="2026-07-02" required/, '가상 업무일: 마지막 기록의 업무일을 이어받음');
   assert.match(html, /<th scope="col">기록 시각<\/th>/);
 });
@@ -216,7 +216,7 @@ test('administrator sees the catalog and AI log; others cannot', async () => {
     { id: 'p9', kind: 'item', label: '공동 납품 계약 여부', format: 'text', attachment: '', status: 'proposed' },
   ] });
   assert.match(catalog.html, /공동 납품 계약 여부/);
-  assert.match(catalog.html, /AI 제안 · 검토 대기/);
+  assert.match(catalog.html, /AI 제안 검토/);
   assert.match(catalog.html, /value="catalog_add"/);
   const denied = await render({ url: '/?view=catalog&period=2026-06', role: 0 });
   assert.equal(denied.status, 403);
