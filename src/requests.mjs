@@ -124,7 +124,7 @@ export function replyText(merged, items) {
     if (!filled(answer)) return null;
     return item.label + ': ' + [answer.yesno, answer.text,
       answer.account && '수취계좌 ' + answer.account + (answer.holder ? ' 예금주 ' + answer.holder : ''),
-      answer.attachment && '첨부 ' + answer.attachment].filter(Boolean).join(' · ');
+      answer.attachment && '첨부 ' + answer.attachment].filter(Boolean).join(', ');
   }).filter(Boolean).join('\n')).join('\n\n');
 }
 
@@ -149,7 +149,7 @@ export function resendItems(items, merged, checks) {
 export function resendText(items) {
   const byAgency = {};
   for (const item of items) for (const agency of item.recipients) (byAgency[agency] ??= []).push(item.label);
-  return Object.entries(byAgency).map(([agency, labels]) => agency + ' · ' + labels.join(', ') + ' 보완이 필요합니다.').join('\n');
+  return Object.entries(byAgency).map(([agency, labels]) => agency + ': ' + labels.join(', ') + ' 보완이 필요합니다.').join('\n');
 }
 
 export { formatLabels };

@@ -5,8 +5,8 @@ export const steps = {
   verify: ['received', 'verified', '영업지원팀', '소명 확인 완료'],
   resubmit: ['verified', 'resubmitted', '영업지원팀', '임원 재상신'],
   payment: ['paymentPending', 'paymentReady', '회계', '지급 시스템 반영'],
-  payment_ok: ['paymentReady', 'reconciled', '회계', '은행 회신 · 전부 지급'],
-  payment_returned: ['paymentReady', 'paymentReturned', '회계', '은행 회신 · 일부 반려'],
+  payment_ok: ['paymentReady', 'reconciled', '회계', '은행 회신, 전부 지급'],
+  payment_returned: ['paymentReady', 'paymentReturned', '회계', '은행 회신, 일부 반려'],
   payee_recheck: ['paymentReturned', 'repayReady', '영업지원팀', '받는 계좌 재확인'],
 };
 const paymentStates = { payment: 'paymentReady', payment_ok: 'reconciled', payment_returned: 'paymentReturned', payee_recheck: 'repayReady' };
@@ -14,9 +14,9 @@ const paymentState = latest => paymentStates[latest] ?? 'paymentPending';
 
 export const labels = {
   draft: '소명 요청 작성', waiting: '답변 대기', received: '답변 검토',
-  verified: '확인 완료', resubmitted: '재상신 · 승인 대기',
-  paymentPending: '지급 반영 대기', paymentReady: '지급 반영 · 은행 회신 대기',
-  reconciled: '지급 완료 · 대사 끝', paymentReturned: '지급 반려 · 계좌 재확인', repayReady: '재지급 대기',
+  verified: '확인 완료', resubmitted: '재상신, 승인 대기',
+  paymentPending: '지급 반영 대기', paymentReady: '은행 회신 대기',
+  reconciled: '지급 완료', paymentReturned: '지급 반려', repayReady: '재지급 대기',
 };
 
 export function followupState(record, latest, executive) {

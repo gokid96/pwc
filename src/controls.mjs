@@ -34,13 +34,13 @@ export const itemCatalog = {
   payee: { label: '장려금 받을 계좌와 예금주', format: 'account', attachment: '통장 사본' },
   sameRep: { label: '대표자가 같은 사람인지', format: 'yesno', attachment: '사업자등록증' },
   sameAddress: { label: '사업장 주소가 같은 이유', format: 'text', attachment: '' },
-  relation: { label: '거래처 간 지분·운영 관계', format: 'text', attachment: '' },
+  relation: { label: '거래처 간 지분, 운영 관계', format: 'text', attachment: '' },
 };
 export const formatLabels = { text: '서술', account: '계좌 입력', yesno: '예/아니오 + 설명' };
 // 이전 버전과 호환: 고정 3개 기준(테스트·기존 기록 표시용)
 export const replyCriteria = [
-  { id: 'history', label: '공동 입금계좌·등록정보 공유 경위' },
-  { id: 'payee', label: '거래처별 지급 수취계좌·예금주 명의' },
+  { id: 'history', label: '공동 입금계좌와 등록정보 공유 경위' },
+  { id: 'payee', label: '거래처별 지급 수취계좌와 예금주 명의' },
   { id: 'evidence', label: '요청한 증빙 제출 또는 제출 위치' },
 ];
 export const verdictLabels = { met: '충족', partial: '부분', unclear: '부분', missing: '부족' };
@@ -55,14 +55,14 @@ function sharedEvidence(item) {
 export function itemBasis(item, catalog = itemCatalog) {
   const matched = new Set(item.group.links.flatMap(link => link.matchedFields));
   const pairs = field => item.group.links.filter(link => link.matchedFields.includes(field))
-    .map(link => link.agencyIds.join('·')).join(', ');
+    .map(link => link.agencyIds.join('와 ')).join(', ');
   const shared = sharedEvidence(item);
   const outside = shared.flatMap(entry => entry.deposits.filter(row =>
     !entry.registered.some(registered => registered.agencyId === row.agencyId)));
   const basis = {};
   const add = (id, text) => { if (catalog[id] && catalog[id].status !== 'disabled') basis[id] = text; };
   if (shared.length) add('sharedAccount', '같은 입금계좌(•••• ' + shared[0].account.slice(-4) + ') 사용' +
-    (outside.length ? ' · ' + outside.map(row => row.depositId).join('·') : ''));
+    (outside.length ? ', ' + outside.map(row => row.depositId).join(', ') : ''));
   if (shared.length || matched.has('bank_account_no')) add('payee', shared.length ? '공동 입금계좌 정황' : '정산계좌 일치 ' + pairs('bank_account_no'));
   if (matched.has('representative_name')) add('sameRep', '대표자 이름 일치 ' + pairs('representative_name'));
   if (matched.has('address')) add('sameAddress', '주소 일치 ' + pairs('address'));
@@ -128,20 +128,20 @@ export const conditionCatalog = {
 export function conditionBasis(item, { pastConclusion } = {}) {
   const matched = new Set(item.group.links.flatMap(link => link.matchedFields));
   const pairs = field => item.group.links.filter(link => link.matchedFields.includes(field))
-    .map(link => link.agencyIds.join('·')).join(', ');
+    .map(link => link.agencyIds.join('와 ')).join(', ');
   const shared = item.collectionEvidence.filter(entry => new Set(entry.deposits.map(row => row.agencyId)).size > 1);
   const outside = shared.flatMap(entry => entry.deposits.filter(row =>
     !entry.registered.some(registered => registered.agencyId === row.agencyId)));
-  const sharedText = shared.map(entry => [...new Set(entry.deposits.map(row => row.agencyId))].join('·') +
+  const sharedText = shared.map(entry => [...new Set(entry.deposits.map(row => row.agencyId))].join(', ') +
     '이 같은 입금계좌(•••• ' + entry.account.slice(-4) + ') 사용').join(', ');
-  const outsideText = outside.length ? ' · 등록계좌가 다른 거래처의 입금 ' + outside.map(row => row.depositId).join('·') : '';
+  const outsideText = outside.length ? ', 등록계좌가 다른 거래처의 입금 ' + outside.map(row => row.depositId).join(', ') : '';
   const basis = {};
   if (shared.length || matched.has('bank_account_no')) {
     basis.payeeProof = shared.length ? sharedText + outsideText : '정산계좌 일치 ' + pairs('bank_account_no');
   }
   if (shared.length) basis.sharedAccountStatement = sharedText;
   if (matched.has('representative_name')) {
-    basis.representativeProof = '대표자 일치 ' + pairs('representative_name') + ' · 동명이인 여부는 등록 정보만으로 판단 불가';
+    basis.representativeProof = '대표자 일치 ' + pairs('representative_name') + ', 동명이인 여부는 등록 정보만으로 판단 불가';
   }
   if (matched.has('address')) basis.addressProof = '주소 일치 ' + pairs('address');
   if (['audit_report', 'recovery'].includes(pastConclusion)) basis.precheck3m = '사후 검토 결론 ' + (pastConclusion === 'audit_report' ? '감사 보고' : '회수 검토');
@@ -170,7 +170,7 @@ export function confirmedConditions(record, events) {
     .map(event => [event.metadata.condition, event]));
 }
 
-export const postAuditConclusions = { closed: '정당 사유 확인 · 종결', audit_report: '감사 보고', recovery: '회수 검토' };
+export const postAuditConclusions = { closed: '정당 사유 확인, 종결', audit_report: '감사 보고', recovery: '회수 검토' };
 
 export const masterCheckResults = { same: '당시에도 지금과 같았음', different: '당시 등록 정보가 달랐음', unknown: '확인할 수 없음' };
 
@@ -188,7 +188,7 @@ export function postAuditCause(group, data, masterCheck) {
   return { code: before ? 'approval_unit_likely' : 'unknown', confirmed: false,
     text: (before ? '현재 등록 정보 기준으로는 세 거래처가 첫 지급(' + firstPaid + ') 전부터 등록돼 있어(' + span + ') 묶음 대상으로 보임. '
       : '일부 거래처가 첫 지급(' + firstPaid + ') 이후 등록됨. ') +
-      '다만 승인 당시의 대표자·주소·계좌 기록은 원본에 없어 확인이 필요함.' };
+      '다만 승인 당시의 대표자, 주소, 계좌 기록은 원본에 없어 확인이 필요함.' };
 }
 
 // 지난 지급 점검에서 감사 보고·회수 검토로 결론 난 묶음은 결론 다음 달부터 3개월 동안

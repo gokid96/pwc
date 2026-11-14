@@ -51,7 +51,7 @@ test('requests go per item to the right agencies and resends narrow to what is m
     { id: 'sameRep', verdict: 'missing' }, { id: 'custom1', verdict: 'missing' }]);
   assert.deepEqual(narrowed.map(row => row.id), ['payee', 'sameRep', 'custom1']);
   assert.deepEqual(narrowed[0].recipients, ['D-024', 'D-037']);
-  assert.match(resendText(narrowed), /^D-024 · 장려금 받을 계좌와 예금주/m);
+  assert.match(resendText(narrowed), /^D-024: 장려금 받을 계좌와 예금주/m);
   const legacy = recipientsOf([{ id: 9, action: 'send', agency_id: 'D-011' }], 'D-011');
   assert.deepEqual(legacy, ['D-011']);
 });

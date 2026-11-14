@@ -371,7 +371,7 @@ export function replyReview(c, h) {
       '<span class="line" style="gap:6px;flex-wrap:wrap">' + marks.map(mark => '<span class="dot" title="' + escape(h.name(mark.agency)) + '" style="background:' + tones[mark.status][0] + ';color:' + tones[mark.status][1] +
         ';width:auto;padding:0 8px;border-radius:6px">' + escape(h.name(mark.agency)) + '</span>').join('') +
       (verdict ? pill(verdictTone[verdict.verdict], escape(verdictLabels[verdict.verdict])) : '') + '</span></div>' +
-      (verdict?.note && verdict.verdict !== 'met' ? '<p class="ai-note"><span class="ai-b">AI</span>' + escape(verdict.note) + '</p>' : '') +
+      (verdict?.note && verdict.verdict !== 'met' ? '<p class="ai-note"><span class="ai-b">AI</span>' + escape(verdict.note.replace(/D-\d{3}/g, agencyId => h.name(agencyId))) + '</p>' : '') +
       '<details style="margin-top:6px"><summary>답변 펼치기</summary><div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:14px">' +
         marks.map(mark => '<p><strong>' + escape(h.name(mark.agency)) + '</strong> ' + answerLine(mark) + '</p>').join('') + '</div></details>' +
       (editing ? '<div class="line" style="gap:14px;margin-top:8px;flex-wrap:wrap"><span class="muted">보완 요청 대상</span>' + row.recipients.map(agencyId =>
@@ -574,7 +574,7 @@ function execSummary(c, h, entry) {
   const facts = c.summaryFacts(entry);
   const regen = h.regen({ view: 'requests', group: id }, 'ai_summary', '#ai-summary', '다시 요약');
   const auto = c.open && !call ? h.post({ view: 'requests', group: id }, '<button name="action" value="ai_summary">AI 요약</button>', ' hidden data-ai data-auto data-target="#ai-summary"') : '';
-  const body = call?.result ? '<ol style="margin:0;padding-left:18px;font-size:14px;line-height:1.8">' + call.result.points.map(point => '<li>' + escape(point.text) + '</li>').join('') + '</ol>'
+  const body = call?.result ? '<ol style="margin:0;padding-left:18px;font-size:14px;line-height:1.8">' + call.result.points.map(point => '<li>' + escape(point.text.replace(/D-\d{3}/g, agencyId => h.name(agencyId))) + '</li>').join('') + '</ol>'
     : '<p class="muted" data-ai-status>' + (call?.finished_at ? 'AI 요약을 만들지 못했어요. 아래 근거를 직접 봐 주세요.' : 'AI가 요약하는 중이에요') + '</p>';
   return auto + (call?.finished_at ? regen.form : '') + '<section class="ai-card" id="ai-summary"><div class="hd" style="margin-bottom:8px"><h2 style="font-size:14px"><span class="ai-b">AI</span>검토 요약</h2>' +
     '<span class="r">' + (call?.finished_at ? regen.button : '') + '</span></div>' + body +
@@ -822,7 +822,7 @@ export function dealerReply(c, h) {
   return '<div><p class="crumb"><a href="' + c.link({ view: 'agency-replies', group: '' }) + '">홈</a> › 확인 요청</p>' +
     '<div class="top" style="align-items:center"><h1>' + Number(c.period.slice(5)) + '월 장려금 확인 요청</h1><span class="muted">' + (request?.metadata?.dueDate ? '기한 ' + escape(request.metadata.dueDate) : '') + '</span></div></div>' +
     (request?.action === 'resend' ? '<section class="card tight warn"><strong>보완이 필요해요: ' + asked.map(row => escape(row.label)).join(', ') + '</strong><p class="muted" style="margin-top:4px">' +
-      escape(request.reason.split('\n').filter(line => !/^D-\d+ · /.test(line) || line.startsWith(c.agency + ' · ')).map(line => line.replace(/^D-\d+ · /, '')).join(' ')) + '</p></section>' : '') +
+      escape(request.reason.split('\n').filter(line => !/^D-\d+(: | · )/.test(line) || line.startsWith(c.agency + ': ') || line.startsWith(c.agency + ' · ')).map(line => line.replace(/^D-\d+(: | · )/, '')).join(' ')) + '</p></section>' : '') +
     (previousItems.length ? '<section class="card tight"><div class="rows">' + previousItems.map(row => '<div class="row"><span class="line">' + icon('ok') + escape(row.label) +
       '</span><span class="muted">확인 완료</span></div>').join('') + '</div></section>' : '') +
     (editable ? h.post({ view: 'agency-replies', group: id }, asked.map(field).join('') + '<div style="display:none">' + recordFields(c.period, null, c.businessDate) + '</div>' +

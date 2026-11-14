@@ -75,7 +75,7 @@ test('reply check keeps only verdicts grounded in the reply and recommends a res
   assert.equal(output.result.items[1].quote, null);
   assert.match(output.result.items[1].note, /찾을 수 없어/);
   assert.equal(output.result.recommendation, 'resend');
-  assert.match(output.result.draft, /거래처별 지급 수취계좌·예금주 명의 \(부분\)/);
+  assert.match(output.result.draft, /거래처별 지급 수취계좌와 예금주 명의 \(부분\)/);
   const allMet = validateReplyCheck({ items: replyCriteria.map(row => ({ id: row.id, verdict: 'met', quote: '입금을' })) }, reply);
   assert.equal(allMet.recommendation, 'verify');
   const invalid = await callAssistant('reply_check', { criteria: replyCriteria, request: '', reply }, {
@@ -89,7 +89,7 @@ test('condition proposals stay inside the evidence-based catalog and past exceed
   const june = result.requests.find(row => row.period === '2026-06' && row.group.groupId === 'D-011');
   const basis = conditionBasis(june);
   assert.deepEqual(Object.keys(basis).sort(), ['addressProof', 'payeeProof', 'representativeProof', 'sharedAccountStatement']);
-  assert.match(basis.payeeProof, /DP-00013·DP-00014/);
+  assert.match(basis.payeeProof, /DP-00013, DP-00014/);
   const allowed = Object.keys(basis).map(id => ({ id, label: conditionCatalog[id], basis: basis[id] }));
   const valid = await callAssistant('conditions', { allowed }, { run: async () => ({ conditions: ['payeeProof', 'sharedAccountStatement'] }) });
   assert.deepEqual(valid.result, { conditions: ['payeeProof', 'sharedAccountStatement'] });
