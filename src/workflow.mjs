@@ -16,7 +16,7 @@ const roleDescriptions = [
   'AI 사용 기록, 확인 항목 목록, 묶음 이의 제기를 관리합니다.',
 ];
 const roleViews = [
-  ['home', 'requests', 'followup', 'documents', 'review', 'post-audit'],
+  ['requests', 'followup', 'documents', 'review', 'post-audit'],
   ['requests', 'post-audit'],
   ['accounting', 'post-audit'],
   ['agency-replies', 'documents'],
@@ -161,7 +161,8 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
             ...(historicalReview ? { after: 'historical-review' } : {}) }).toString()) +
           '"><button><strong>' + name + '</strong><small>' + roleDescriptions[index] + '</small><span style="margin-top:auto;color:#2467d6">들어가기 →</span></button></form>').join('') + '</div>'));
     }
-    const view = requestedView ?? (query.has('group') ? 'requests' : roleViews[roleIndex][0]);
+    // 예전 주소(view=home)는 영업지원팀 첫 화면인 승인 요청으로 보낸다.
+    const view = requestedView === 'home' && roleIndex === 0 ? 'requests' : requestedView ?? (query.has('group') ? 'requests' : roleViews[roleIndex][0]);
     if (!roleViews[roleIndex].includes(view) && (view !== 'ai-log' || role === '대리점')) return denied();
     const data = await readData();
     const original = calculate(data);
@@ -946,8 +947,7 @@ export function createWorkflow(pool, readData, calculate, assistant = callAssist
     let content;
     let title;
     if (role === roles[0]) {
-      if (view === 'home') [title, content] = ['홈', screens.supportHome(c, h)];
-      else if (view === 'requests') [title, content] = item ? ['요청 상세', open ? screens.supportDetail(c, h) : screens.pastMonthDetail(c, h)] : ['승인 요청', screens.supportList(c, h)];
+      if (view === 'requests') [title, content] = item ? ['요청 상세', open ? screens.supportDetail(c, h) : screens.pastMonthDetail(c, h)] : ['승인 요청', screens.supportList(c, h)];
       else if (view === 'followup') {
         const state = item && stateFor(item);
         [title, content] = item && state === 'draft' && open ? ['확인 요청', screens.composeRequest(c, h)]

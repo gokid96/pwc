@@ -122,29 +122,6 @@ const listCard = (rows, empty) => '<section class="card" style="padding-top:6px;
 const dueOf = (c, entry) => c.eventsFor(entry.group.groupId).findLast(event => ['send', 'resend'].includes(event.action))?.metadata?.dueDate;
 
 
-export function supportHome(c, h) {
-  const teamPending = c.list.filter(entry => c.selectable(entry));
-  const mine = c.list.filter(entry => ['draft', 'received', 'verified'].includes(c.stateFor(entry)));
-  const docs = c.documents.filter(row => !row.applied);
-  const recovery = c.past.filter(row => row.conclusion === 'recovery' && !row.recoveryDone);
-  const notices = c.list.flatMap(entry => c.eventsFor(entry.group.groupId).filter(event => ['reply', 'reject', 'clarify', 'payment_returned', 'payee_change_request'].includes(event.action))
-    .map(event => [event, entry])).sort((a, b) => Number(b[0].id) - Number(a[0].id)).slice(0, 5);
-  const noticeLabel = { reply: '답변 도착', reject: '임원 거절', clarify: '임원 추가 확인 요청', payment_returned: '지급 반려', payee_change_request: '회계 계좌 변경 요청' };
-  const todo = [
-    ...mine.map(entry => lrow(c.link({ view: 'followup', group: entry.group.groupId }),
-      { draft: '확인 요청 작성', received: '답변 검토', verified: '임원에게 다시 올리기' }[c.stateFor(entry)], escape(h.title(entry)),
-      (c.stateFor(entry) === 'received' ? pill('blue', '답변 도착') : '') + dday(dueOf(c, entry), c.businessDate))),
-    ...c.list.filter(entry => c.stateFor(entry) === 'paymentReturned').map(entry => lrow(c.link({ view: 'requests', group: entry.group.groupId }), '받는 계좌 재확인', escape(h.title(entry)), pill('red', '지급 반려'))),
-    ...docs.map(row => lrow(c.link({ view: 'documents', document: row.id }), '서류 확인', escape(h.name(row.agency_id)), escape(row.metadata?.occurredOn ?? ''))),
-    ...recovery.map(row => lrow(c.link({ view: 'post-audit', audit: row.groupId }), '회수 확인', escape(h.name(row.groupId)), '')),
-    ...(teamPending.length ? [lrow(c.link({ view: 'requests' }), '팀 승인', Number(c.period.slice(5)) + '월 정산 ' + teamPending.length + '건', '')] : []),
-  ];
-  return '<div class="top" style="align-items:center"><h1>오늘 할 일</h1><span class="muted">' + escape(c.businessDate) + '</span></div>' +
-    listCard(todo, '오늘 할 일을 모두 마쳤어요') +
-    (notices.length ? '<section class="card" style="padding-bottom:6px"><div class="hd"><h2>알림</h2></div>' + notices.map(([event, entry]) =>
-      lrow(c.link({ view: event.action === 'reply' ? 'followup' : 'requests', group: entry.group.groupId }), (event.agency_id ? h.name(event.agency_id) : h.title(entry)) + ' ' + noticeLabel[event.action], '',
-        escape(event.metadata?.occurredOn ?? time(event.acted_at)))).join('') + '</section>' : '');
-}
 
 export function supportList(c, h) {
   const tabs = ['mine', 'flag', 'exec', 'hold', 'rejected', 'done', 'all'];

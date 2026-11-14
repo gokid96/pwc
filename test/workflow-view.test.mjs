@@ -187,10 +187,9 @@ test('past breaches: accounting decides one of three conclusions, others only re
     { id: 5, group_id: 'D-011', role: '회계', action: 'post_audit_done', reason: '회수 검토', acted_at: new Date('2026-07-01'), metadata: { conclusion: 'recovery' } },
   ] });
   assert.match(recovery.html, /value="recovery_done"/);
-  const home = await render({ url: '/?view=home&period=2026-06', role: 0, events: recovery.html ? [
-    { id: 5, group_id: 'D-011', role: '회계', action: 'post_audit_done', reason: '회수 검토', acted_at: new Date('2026-07-01'), metadata: { conclusion: 'recovery' } },
-  ] : [] });
-  assert.match(home.html, /회수 확인/);
+  const home = await render({ url: '/?view=home&period=2026-06', role: 0 });
+  assert.match(home.html, /<title>승인 요청/, '예전 홈 주소는 승인 요청으로 열림');
+  assert.doesNotMatch(home.html, />홈</);
 });
 
 test('history is newest first and records stay collapsed with defaults', async () => {
