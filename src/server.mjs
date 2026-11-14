@@ -1,11 +1,33 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import pg from 'pg';
 import { createDemoWorkflow } from './demo-session.mjs';
 import { calculateW07, loadW07Data } from './w07.mjs';
 
 const env = process.env;
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
+// 예전 배포는 원본을 파일 저장소(S3)에 두었다. DB가 비어 있으면 그 원본을 읽어 DB에 한 번 옮긴다.
+const s3 = env.STORAGE_BUCKET ? new S3Client({
+  endpoint: env.STORAGE_ENDPOINT,
+  region: 'auto',
+  forcePathStyle: true,
+  credentials: { accessKeyId: env.STORAGE_ACCESS_KEY, secretAccessKey: env.STORAGE_SECRET_KEY },
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+  responseChecksumValidation: 'WHEN_REQUIRED',
+}) : null;
+
+async function legacySources() {
+  if (!s3) return null;
+  try {
+    const { Body } = await s3.send(new GetObjectCommand({ Bucket: env.STORAGE_BUCKET, Key: 'w07/source-csvs.json' }));
+    return await Body.transformToString('utf-8');
+  } catch (error) {
+    console.error('Legacy source read failed', error.name);
+    return null;
+  }
+}
+
 let sourceSchema;
 function ensureSourceTable() {
   sourceSchema ??= pool.query(`CREATE TABLE IF NOT EXISTS public.w07_source_data (
@@ -55,8 +77,13 @@ function readSources(sources) {
 async function readStoredData() {
   await ensureSourceTable();
   const { rows } = await pool.query('SELECT payload FROM public.w07_source_data WHERE singleton');
-  if (!rows.length) throw new Error('W07 source data has not been loaded');
-  return readSources(rows[0].payload);
+  if (rows.length) return readSources(rows[0].payload);
+  const legacy = await legacySources();
+  if (!legacy) throw new Error('W07 source data has not been loaded');
+  const data = await readSources(JSON.parse(legacy));
+  await pool.query(`INSERT INTO public.w07_source_data (singleton, payload) VALUES (true, $1)
+    ON CONFLICT (singleton) DO NOTHING`, [legacy]);
+  return data;
 }
 
 const workflow = createDemoWorkflow(pool, readStoredData, calculateW07, env.CONNECTION_CHECK_TOKEN);
