@@ -34,15 +34,28 @@ export function createDemoWorkflow(pool, readData, calculate, secret) {
             }
           })();
           await schemaReady;
-          await client.query('SET search_path TO ' + schema);
+          // 연결 풀(pgbouncer 등)에서 세션 단위 SET은 다른 연결로 새어 나갈 수 있어서,
+          // 모든 쿼리를 트랜잭션 안에서 SET LOCAL로 이 브라우저의 스키마에 묶는다.
+          const scope = () => client.query('SET LOCAL search_path TO ' + schema);
+          let inTransaction = false;
           return {
-            query: client.query.bind(client),
-            release() {
-              client.query('RESET search_path').then(
-                () => client.release(),
-                error => client.release(error),
-              );
+            async query(sql, values) {
+              const head = typeof sql === 'string' ? sql.trim().toUpperCase() : '';
+              if (head === 'BEGIN') { const result = await client.query(sql); await scope(); inTransaction = true; return result; }
+              if (head === 'COMMIT' || head === 'ROLLBACK') { inTransaction = false; return client.query(sql, values); }
+              if (inTransaction) return client.query(sql, values);
+              await client.query('BEGIN');
+              try {
+                await scope();
+                const result = await client.query(sql, values);
+                await client.query('COMMIT');
+                return result;
+              } catch (error) {
+                await client.query('ROLLBACK').catch(() => {});
+                throw error;
+              }
             },
+            release(error) { client.release(error); },
           };
         } catch (error) {
           client.release(error);
